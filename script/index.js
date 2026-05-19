@@ -418,12 +418,18 @@ function carregarMenuBanco() {
             if (!select) return;
 
             select.innerHTML = '<option value="">Selecione um arquivo Excel...</option>';
+
             listaSprints.forEach(sprint => {
                 const opt = document.createElement('option');
                 opt.value = `http://localhost:3000/${sprint.caminho_arquivo}`;
                 opt.textContent = sprint.nome_exibicao;
                 select.appendChild(opt);
             });
+            // Se a pasta utils tiver arquivos antigos, abre o primeiro automaticamente
+            if (listaSprints.length > 0) {
+                select.selectedIndex = 1; // Pula o texto inicial e pega o 1º Excel
+                select.dispatchEvent(new Event('change')); // Dispara o carregamento e plota os gráficos
+            }
         })
         .catch(err => console.error('Servidor local offline ou indisponível.'));
 }

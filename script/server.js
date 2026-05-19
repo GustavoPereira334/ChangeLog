@@ -114,18 +114,30 @@ app.get('/api/sincronizar-monday-sprints', async (req, res) => {
 app.get('/api/sprints-da-pasta', async (req, res) => {
     try {
         const files = await fsPromises.readdir(dirPath);
-        const lista = files.filter(f => f.endsWith('.xlsx')).map(f => {
-            let nomeExibicao = f.replace('.xlsx', '').toUpperCase().replace(/_/g, ' ');
-            if (nomeExibicao.startsWith('TICKETS SPRINT ')) nomeExibicao = `MOVIDESK - ${nomeExibicao.replace('TICKETS SPRINT ', '')}`;
-            else if (nomeExibicao.startsWith('MONDAY SPRINT ')) nomeExibicao = `MONDAY - ${nomeExibicao.replace('MONDAY SPRINT ', '')}`;
+        
+        const lista = files
+            .filter(f => f.endsWith('.xlsx')) 
+            .map(f => {
+                let nomeExibicao = f.replace('.xlsx', '').toUpperCase().replace(/_/g, ' ');
+                if (nomeExibicao.startsWith('TICKETS SPRINT ')) {
+                    nomeExibicao = `MOVIDESK - ${nomeExibicao.replace('TICKETS SPRINT ', '')}`;
+                } else if (nomeExibicao.startsWith('MONDAY SPRINT ')) {
+                    nomeExibicao = `MONDAY - ${nomeExibicao.replace('MONDAY SPRINT ', '')}`;
+                }
 
-            return { nome_exibicao: nomeExibicao, caminho_arquivo: `utils/${f}` };
-        });
+                return { 
+                    nome_exibicao: nomeExibicao, 
+                    caminho_arquivo: `utils/${f}` 
+                };
+            })
+            .sort((a, b) => b.nome_exibicao.localeCompare(a.nome_exibicao));
+
         res.json(lista);
     } catch (err) {
-        res.status(500).json({ erro: "Erro ao ler pasta de arquivos." });
+        res.status(500).json({ erro: "Erro ao ler pasta de arquivos históricos." });
     }
 });
+
 
 app.get('/api/sincronizar-tudo', async (req, res) => {
     try {
