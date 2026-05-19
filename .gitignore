@@ -1,0 +1,50 @@
+# =========================================================================
+# 1. DADOS CONFIDENCIAIS E SEGURANÇA (NUNCA SUBIR PARA O GIT)
+# =========================================================================
+.env
+.env.local
+.env.development
+.env.production
+
+# =========================================================================
+# 2. GERENCIADORES DE PACOTES E DEPENDÊNCIAS
+# =========================================================================
+utils/
+images/
+node_modules/
+jspm_packages/
+.pnp
+.pnp.js
+
+# =========================================================================
+# 3. ARQUIVOS GERADOS / PLANILHAS DO DASHBOARD (ALTONA ENGINE)
+# =========================================================================
+# Bloqueia os arquivos Excel gerados para não lotar o Git
+utils/*.xlsx
+utils/*.json
+
+# Caso a sua pasta com planilhas fique em outra estrutura, pode ocultar por inteiro:
+# public/utils/
+
+# =========================================================================
+# 4. LOGS E ARQUIVOS TEMPORÁRIOS DE SISTEMA
+# =========================================================================
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Arquivos do sistema operacional (Mac e Windows)
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Diretórios de debug de IDEs (VS Code, WebStorm)
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj

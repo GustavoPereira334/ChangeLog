@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChangeLog de Sistemas - TI</title>
+    <link rel="stylesheet" href="style/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+    <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+</head>
+
+<body>
+    <header>
+        <div class="logoAltona">
+            <img src="images/logo.png" alt="Logo Altona">
+        </div>
+        <div class="containerHeader">
+            <h1>ChangeLog Sistemas - TI</h1>
+            <p>Modelo para publicação na Intranet</p>
+            <div class="estatisticas">
+                <div><strong>Período: </strong><span id="resumoPeriodo">Carregando...</span></div>
+                <div><strong>Total: </strong><span id="resumoTotal">0</span> Tíckets</div>
+                <div><strong>Áreas: </strong><span id="resumoAreas">0</span></div>
+                <div><strong>Atendidos: </strong><span id="resumoAtendidos">0</span></div>
+            </div>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <button id="btnSyncMovidesk" class="btn-upload" style="border: none; cursor: pointer;">
+                    Sincronizar Movidesk
+                </button>
+                <button id="btnSyncMonday" class="btn-upload" style="border: none; cursor: pointer;">
+                    Sincronizar Monday.com
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <div class="SelectorSprintColor">
+        <div class="filtroSprint">
+            <label for="selectSprint">Selecionar Sprints: </label>
+            <select id="selectSprint">
+                <option value="">Carregando...</option>
+            </select>
+        </div>
+    </div>
+    <main class="container">
+        <section class="cards">
+            <div class="cardAberto">
+                <h3>Total de itens</h3>
+                <div class="value"><strong id="cardTotal">0</strong></div>
+            </div>
+            <div class="cardAtendidos">
+                <h3>Atendidos</h3>
+                <div class="value"><strong id="cardAtendidos">0</strong></div>
+            </div>
+            <div class="cardAtendimento">
+                <h3>% Atendimento</h3>
+                <div class="value"><strong id="cardPercentual">0%</strong></div>
+            </div>
+            <div class="cardAreasAtendidas">
+                <h3>Áreas atendidas</h3>
+                <div class="value"><strong id="cardAreas">0</strong></div>
+            </div>
+        </section>
+        <section class="DashBoards">
+            <!--  Áreas e Prioridade -->
+            <div class="coluna-dash">
+                <div id="chart_setores" class="chart-box"></div>
+                <div id="chart_prioridades" class="chart-box"></div>
+            </div>
+
+            <!--  Tipo e Pizza SLA -->
+            <div class="coluna-dash">
+                <div id="chart_tipo" class="chart-box"></div>
+                <div id="chart_sla" class="chart-box"></div>
+            </div>
+
+            <!--  Tabela SLA e Burn Down -->
+            <div class="coluna-dash">
+                <div class="tabela-sla-box">
+                    <h3>Itens fora do SLA</h3>
+                    <div id="outputSLA" class="tabelaSLA"></div>
+                </div>
+
+                <div class="burn-down-box">
+                    <div id="chart_burn_down"></div>
+                    <p class="obs-texto"><strong>Observação:</strong> Resumo de itens no período.</p>
+                </div>
+            </div>
+        </section>
+        <section class="Chamados">
+            <div class="filters">
+                <label for="busca"></label>
+                <input type="search" name="busca" id="busca" placeholder="Buscar ID, Título, Área...">
+
+                <select id="areaBox">
+                    <option value="todasAreas">Todas as Áreas</option>
+                </select>
+
+                <select id="tipoBox">
+                    <option value="todosTipos">Todos os Tipos</option>
+                    <option value="bug">Bug</option> 
+                    <option value="melhoria">Melhoria</option>
+                    <option value="novo">Novo</option>
+                    <option value="projeto">Projeto</option>
+                </select>
+            </div>
+
+            <!-- TABELA EXCEL -->
+            <div id="output" class="tabela-container"></div>
+        </section>
+    </main>
+
+    <footer>
+        <p><strong>&copy;EletroAço Altona</strong> - Talentos gerando soluções.</p>
+    </footer>
+
+</body>
+<script src="script/index.js"></script>
+
+</html>
