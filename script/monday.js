@@ -307,7 +307,7 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
     else if (['FILA'].includes(statusUpper)) statusFinal = 'Fila';
     else if (['EM ANÁLISE', 'EM ANALISE'].includes(statusUpper)) statusFinal = 'Em Análise';
 
-    const status = statusFinal; 
+    const status = statusFinal;
     let tempoResolucao = mov.tempoResolucao ?? 'N/A';
 
     contagemArea[area] = (contagemArea[area] || 0) + 1;
@@ -385,12 +385,12 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
       dentroSLACount++;
     } else {
       foraSLACount++;
-      ticketsForaSLA.push({ 
-        ticket: ticketId, 
-        area: area, 
-        titulo: titulo, 
-        prioridade: prioridade, 
-        atraso: calculoAtraso 
+      ticketsForaSLA.push({
+        ticket: ticketId,
+        area: area,
+        titulo: titulo,
+        prioridade: prioridade,
+        atraso: calculoAtraso
       });
     }
 
@@ -597,7 +597,7 @@ async function sincronizarMondaySprints(token, boardId, mondayTextColId, mondayS
   for (const item of todosItensMonday) {
     const nomeGrupo = item.group?.title ? item.group.title.trim() : 'Sem Sprint';
 
-    //Ignora os groups administrativo
+    // Ignora os groups administrativos
     const nomeGrupoUpper = nomeGrupo.toUpperCase();
     if (['BACKLOG', 'PROXIMA SPRINT', 'PRÓXIMA SPRINT', 'SPRINT ATUAL'].includes(nomeGrupoUpper)) {
       continue; // Pula o item e nao gera excel
@@ -619,6 +619,40 @@ async function sincronizarMondaySprints(token, boardId, mondayTextColId, mondayS
     } catch (err) {
       console.error(`[Monday] Falha ao processar a fatia da sprint "${sprintNome}":`, err.message, err.stack);
     }
+  }
+
+  // =========================================================================
+  // MOTOR DE MAPA DE ARQUIVOS ESTÁTICOS COMPATÍVEL COM GITHUB PAGES / OFFLINE
+  // =========================================================================
+  try {
+    // Lê a pasta física utils para descobrir o histórico real de arquivos gerados
+    const arquivosNaPasta = await fs.readdir(dirPath);
+
+    const listaCompletaSprints = arquivosNaPasta
+      .filter(f => f.endsWith('.xlsx'))
+      .map(f => {
+        let nomeExibicao = f.replace('.xlsx', '').toUpperCase().replace(/_/g, ' ');
+        if (nomeExibicao.startsWith('TICKETS SPRINT ')) {
+          nomeExibicao = `MOVIDESK - ${nomeExibicao.replace('TICKETS SPRINT ', '')}`;
+        } else if (nomeExibicao.startsWith('MONDAY SPRINT ')) {
+          nomeExibicao = `MONDAY - ${nomeExibicao.replace('MONDAY SPRINT ', '')}`;
+        }
+
+        return {
+          nome_exibicao: nomeExibicao,
+          caminho_arquivo: `utils/${f}`
+        };
+      })
+      // Garante que o select exiba as sprints mais novas primeiro por ordenação reversa
+      .sort((a, b) => b.nome_exibicao.localeCompare(a.nome_exibicao));
+
+    // Grava um arquivo JSON estático de índice contendo o array mapeado de planilhas
+    const caminhoDoIndiceJson = path.join(dirPath, 'sprints.json');
+    await fs.writeFile(caminhoDoIndiceJson, JSON.stringify(listaCompletaSprints, null, 2), 'utf8');
+    console.log(`[Altona Engine] Índice de arquivos estáticos criado em: utils/sprints.json`);
+
+  } catch (errDiscorv) {
+    console.error('[Altona Engine] Erro ao tentar mapear arquivos estáticos da pasta utils:', errDiscorv.message);
   }
 
   return resultados;

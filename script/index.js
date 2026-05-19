@@ -411,25 +411,61 @@ document.getElementById('tipoBox').addEventListener('change', filtrarTabela);
 // 7. CARREGAMENTO DO SERVIDOR
 // ==========================================
 function carregarMenuBanco() {
+    const select = document.getElementById('selectSprint');
+    if (!select) return;
+
+    // 1. TENTA SOLICITAR OS DADOS EM TEMPO REAL AO SERVIDOR (MODO ONLINE)
     fetch('http://localhost:3000/api/sprints-da-pasta')
-        .then(res => res.json())
-        .then(listaSprints => {
-            const select = document.getElementById('selectSprint');
-            if (!select) return;
-
-            select.innerHTML = '<option value="">Selecione um arquivo Excel...</option>';
-
-            listaSprints.forEach(sprint => {
-                const opt = document.createElement('option');
-                opt.value = `http://localhost:3000/${sprint.caminho_arquivo}`;
-                opt.textContent = sprint.nome_exibicao;
-                select.appendChild(opt);
-            });
-            // Se a pasta utils tiver arquivos antigos, abre o primeiro automaticamente
-            if (listaSprints.length > 0) {
-                select.selectedIndex = 1; // Pula o texto inicial e pega o 1º Excel
-                select.dispatchEvent(new Event('change')); // Dispara o carregamento e plota os gráficos
-            }
+        .then(res => {
+            if (!res.ok) throw new Error('Servidor offline');
+            return res.json();
         })
-        .catch(err => console.error('Servidor local offline ou indisponível.'));
+        .then(listaSprints => {
+            if (!listaSprints || listaSprints.length === 0) throw new Error('Pasta vazia');
+            popularSelectComMapeamento(listaSprints, true);
+        })
+        .catch(err => {
+            // 2. CASO O SERVIDOR ESTEJA DESLIGADO (FALLBACK ESTÁTICO PARA OFFLINE / GITHUB PAGES)
+            console.warn('Servidor local offline. Carregando índice estático da pasta utils...');
+            
+            // Faz a leitura direta do arquivo JSON estático gerado pelo monday.js
+            fetch('./utils/sprints.json')
+                .then(resOffline => {
+                    if (!resOffline.ok) throw new Error('Índice sprints.json não localizado');
+                    return resOffline.json();
+                })
+                .then(listaEstática => {
+                    popularSelectComMapeamento(listaEstática, false);
+                })
+                .catch(errOffline => {
+                    console.error('Falha ao ler índice estático:', errOffline);
+                    select.innerHTML = '<option value="">Nenhum arquivo Excel registrado na utils.</option>';
+                });
+        });
+}
+
+function popularSelectComMapeamento(lista, servidorOnline) {
+    const select = document.getElementById('selectSprint');
+    select.innerHTML = '<option value="">Selecione um arquivo Excel...</option>';
+
+    lista.forEach(sprint => {
+        const opt = document.createElement('option');
+        
+        // Se o servidor estiver rodando, monta a URL para bater no barramento Node. 
+        // Se estiver offline, aponta para o caminho relativo local de forma estática pura.
+        if (servidorOnline) {
+            opt.value = sprint.caminho_arquivo.startsWith('http') ? sprint.caminho_arquivo : `http://localhost:3000/${sprint.caminho_arquivo}`;
+        } else {
+            opt.value = `./${sprint.caminho_arquivo}`;
+        }
+        
+        opt.textContent = sprint.nome_exibicao;
+        select.appendChild(opt);
+    });
+
+    // Dispara automaticamente a leitura do primeiro Excel da lista
+    if (lista.length > 0) {
+        select.selectedIndex = 1;
+        select.dispatchEvent(new Event('change'));
+    }
 }

@@ -18,7 +18,7 @@ jspm_packages/
 # 3. ARQUIVOS GERADOS / PLANILHAS DO DASHBOARD (ALTONA ENGINE)
 # =========================================================================
 # Bloqueia os arquivos Excel gerados para não lotar o Git
-utils/*.xlsx
+
 utils/*.json
 
 # Caso a sua pasta com planilhas fique em outra estrutura, pode ocultar por inteiro:
