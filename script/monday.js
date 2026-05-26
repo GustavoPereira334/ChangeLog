@@ -79,7 +79,7 @@ async function buscarTodosTicketsMovidesk(token) {
         resp = await axios.get('https://api.movidesk.com/public/v1/tickets', {
           params: {
             token,
-            '$select': 'id,subject,category,urgency,status,createdDate,closedIn,ownerTeam,serviceFirstLevel,slaSolutionDate,createdBy,clients',
+            '$select': 'id,subject,category,urgency,status,createdDate,resolvedIn,ownerTeam,serviceFirstLevel,slaSolutionDate,createdBy,clients',
             '$expand': 'actions($select=description),createdBy',
             '$filter': "createdDate gt 2023-01-01T00:00:00Z",
             '$top': take,
@@ -115,7 +115,7 @@ async function buscarTodosTicketsMovidesk(token) {
       const area = t.createdBy?.department || t.category || 'N/A';
       const tipo = t.serviceFirstLevel ? String(t.serviceFirstLevel).trim() : 'N/A';
       const createdDate = t.createdDate ? new Date(t.createdDate) : null;
-      const closedDate = t.closedIn ? new Date(t.closedIn) : null;
+      const closedDate = t.resolvedIn ? new Date(t.resolvedIn) : null;
 
       const descRaw = t.actions?.[0]?.description || t.actions?.[0]?.body || '';
       let descTratada = String(descRaw)
@@ -394,7 +394,6 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
       });
     }
 
-    // Valida encerramento na esteira de desenvolvimento real da equipe
     const isConcluido = ['Feito', 'Implantação'].includes(statusFinal);
     if (isConcluido && typeof tempoResolucao === 'number') {
       totalTempoResolucao += tempoResolucao;

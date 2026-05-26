@@ -9,7 +9,7 @@ const envPath = path.join(__dirname, '.env');
 console.log("Tentando carregar .env em:", envPath);
 
 const dotenv = require('dotenv');
-const resultDotEnv = dotenv.config({ path: envPath }); // Renomeado para evitar conflito com 'result' da rota
+const resultDotEnv = dotenv.config({ path: envPath }); 
 
 if (resultDotEnv.error) {
     console.error("Erro ao carregar .env:", resultDotEnv.error);

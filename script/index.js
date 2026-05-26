@@ -4,9 +4,7 @@ google.charts.load('current', { 'packages': ['corechart'] });
 // Carrega o menu inicial ao inicializar o arquivo
 carregarMenuBanco();
 
-// ==========================================
-// 1. LISTENERS DOS BOTÕES DE SINCRONIZAÇÃO
-// ==========================================
+//LISTENERS DOS BOTÕES DE SINCRONIZAÇÃO
 document.getElementById('btnSyncMovidesk').addEventListener('click', async function () {
     const btn = this;
     const original = btn.innerHTML;
@@ -57,9 +55,7 @@ document.getElementById('btnSyncMonday').addEventListener('click', async functio
     }
 });
 
-// ==========================================
-// 2. SELETOR DE SPRINT E CARREGAMENTO EXCEL
-// ==========================================
+//  SELETOR DE SPRINT E CARREGAMENTO EXCEL
 document.getElementById('selectSprint').addEventListener('change', function () {
     const urlArquivo = this.value;
     if (!urlArquivo) return;
@@ -79,9 +75,7 @@ document.getElementById('selectSprint').addEventListener('change', function () {
         });
 });
 
-// ==========================================
-// 3. PROCESSAMENTO DOS DADOS DO EXCEL
-// ==========================================
+//  PROCESSAMENTO DOS DADOS DO EXCEL
 function processarDados(workbook) {
     try {
         const abaDash = workbook.Sheets['Dashboard'];
@@ -93,14 +87,13 @@ function processarDados(workbook) {
             return;
         }
 
-        // Recuperação de KPIs da aba Dashboard
         const vTotal = abaDash['A5'] ? abaDash['A5'].v : 0;
         const vSLA = abaDash['D5'] ? abaDash['D5'].v : 0;
         const vTempo = abaDash['G5'] ? abaDash['G5'].v : 0;
         const vAreas = abaDash['J5'] ? abaDash['J5'].v : 0;
         const vPeriodo = abaDash['B2'] ? (abaDash['B2'].w || abaDash['B2'].v) : 'N/A';
 
-        // Calcula atendidos (Concluído + Implantado + Encerrado) utilizando a aba Resumo
+        // Calcula atendidos Concluído + Implantado + Encerrado utilizando a aba Resumo
         const concluido = abaResumo['N10'] ? abaResumo['N10'].v : 0;
         const implantado = abaResumo['N11'] ? abaResumo['N11'].v : 0;
         const encerrado = abaResumo['N12'] ? abaResumo['N12'].v : 0;
@@ -113,7 +106,7 @@ function processarDados(workbook) {
         document.getElementById('cardPercentual').innerText = vPercentual + '%';
         document.getElementById('cardAreas').innerText = vAreas;
 
-        // Renderiza valores nas estatísticas do cabeçalho
+        // Renderiza valores nas estatísticas do header
         document.getElementById('resumoPeriodo').innerText = vPeriodo;
         document.getElementById('resumoTotal').innerText = vTotal;
         document.getElementById('resumoAreas').innerText = vAreas;
@@ -126,13 +119,13 @@ function processarDados(workbook) {
         // Inicializa o preenchimento automático das caixas de seleção de filtros
         atualizaFiltrosTable();
 
-        // Renderização da mini tabela de estouros de SLA
+        // Renderização da Tabela de Chamados fora da Sprint
         const rangeOriginal = abaDash['!ref'];
         abaDash['!ref'] = 'J9:L20'; // Filtra apenas a região crítica do dashboard do Excel
         document.getElementById('outputSLA').innerHTML = XLSX.utils.sheet_to_html(abaDash);
         abaDash['!ref'] = rangeOriginal;
 
-        // Carrega assincronamente as renderizações visuais do Google Charts
+        //renderiza Google Charts
         google.charts.setOnLoadCallback(() => {
             renderizarTodosGraficos(abaResumo, jsonData);
             setTimeout(colorirNomesTabela, 120);
@@ -144,9 +137,7 @@ function processarDados(workbook) {
     }
 }
 
-// ==========================================
-// 4. MOTOR DE COMPOSIÇÃO DOS GRÁFICOS
-// ==========================================
+// MOTOR DE COMPOSIÇÃO DOS GRÁFICOS
 function renderizarTodosGraficos(abaResumo, jsonData) {
     const resumoJson = XLSX.utils.sheet_to_json(abaResumo, { header: 1 });
 
@@ -155,11 +146,11 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
     let contagemPrio = { 'Crítica': 0, 'Alta': 0, 'Média': 0, 'Baixa': 0 };
     let contagemSLA = { 'Sim': 0, 'Não': 0 };
 
-    // 1. EXTRAÇÃO DE KPI'S MATRICIAIS DA ABA RESUMO
+    // EXTRAÇÃO DE KPI'S MATRICIAIS DA ABA RESUMO
     resumoJson.forEach((row, i) => {
         if (i < 9) return;
 
-        // Tickets por Área (Colunas A e B)
+        // Tickets por Área
         if (row && row[0] && row[1] !== undefined) {
             const valor = parseFloat(row[1]);
             const texto = String(row[0]).trim();
@@ -168,7 +159,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
             }
         }
 
-        // Distribuição por Tipo (Colunas D e E)
+        // Distribuição por Tipo 
         if (row && row[3] && row[4] !== undefined) {
             const valor = parseFloat(row[4]);
             const texto = String(row[3]).trim();
@@ -177,7 +168,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
             }
         }
 
-        // Tickets por Prioridade (Colunas G e H)
+        // Tickets por Prioridade 
         if (row && row[6] && row[7] !== undefined) {
             const valor = parseFloat(row[7]);
             const texto = String(row[6]).trim();
@@ -187,7 +178,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
             }
         }
 
-        // Cumprimento de SLA (Colunas J e K)
+        //Cumprimento de SLA (Colunas J e K)
         if (row && row[9] && row[10] !== undefined) {
             const valor = parseFloat(row[10]);
             const texto = String(row[9]).trim();
@@ -198,9 +189,6 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         }
     });
 
-    // ============================================================
-    // 2. MOTOR DE AGING CRONOLÓGICO DINÂMICO (ABRE AS 5 SEMANAS)
-    // ============================================================
     let semanas = { 'Semana 1': 0, 'Semana 2': 0, 'Semana 3': 0, 'Semana 4': 0, 'Semana 5': 0 };
 
     jsonData.forEach(ticket => {
@@ -218,7 +206,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         if (nomeSemana === '4') nomeSemana = 'Semana 4';
         if (nomeSemana === '5') nomeSemana = 'Semana 5';
 
-        // Regra de Negócio: Incrementa apenas se pertencer ao escopo de chamados finalizados
+        // Incrementa apenas se pertencer ao escopo de chamados finalizados
         if (['CONCLUÍDO', 'IMPLANTADO', 'ENCERRADO', 'FEITO', 'DONE'].includes(statusTicket)) {
             if (semanas[nomeSemana] !== undefined) {
                 semanas[nomeSemana]++;
@@ -226,11 +214,8 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         }
     });
 
-    // ==========================================
-    // 3. RENDERIZAÇÃO DOS DOIS GRÁFICOS RESTANTES
-    // ==========================================
 
-    // GRÁFICO 1 — Tickets por Área
+    // Grafico Tickets por Área
     const dataSetor = new google.visualization.DataTable();
     dataSetor.addColumn('string', 'Área');
     dataSetor.addColumn('number', 'Quantidade');
@@ -245,7 +230,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         vAxis: { format: '0', viewWindow: { min: 0 } }
     });
 
-    // GRÁFICO 2 — Distribuição por Tipo
+    // GRÁFICO Distribuição por Tipo
     const dataTipo = new google.visualization.DataTable();
     dataTipo.addColumn('string', 'Tipo');
     dataTipo.addColumn('number', 'Qtd');
@@ -259,7 +244,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         legend: { position: 'right' }
     });
 
-    // GRÁFICO 3 — Tickets por Prioridade
+    // GRÁFICO  Tickets por Prioridade
     const dataPrio = new google.visualization.DataTable();
     dataPrio.addColumn('string', 'Prioridade');
     dataPrio.addColumn('number', 'Qtd');
@@ -275,7 +260,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         vAxis: { minValue: 0, format: '0' }
     });
 
-    // GRÁFICO 4 — Cumprimento de SLA
+    // GRÁFICO Cumprimento de SLA
     const dataSLA = google.visualization.arrayToDataTable([
         ['SLA', 'Valor'],
         ['Sim', contagemSLA['Sim'] || 0],
@@ -289,12 +274,12 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         legend: { position: 'right' }
     });
 
-    // GRÁFICO 5 — Tickets por Semana (Evolução Contínua Exata)
+    // GRÁFICO Tickets por Semana
     const dataBurn = new google.visualization.DataTable();
     dataBurn.addColumn('string', 'Semana');
     dataBurn.addColumn('number', 'Quantidade');
 
-    // Varre e injeta a escala linear completa de 1 a 5 na linha do tempo
+
     ['Semana 1', 'Semana 2', 'Semana 3', 'Semana 4', 'Semana 5'].forEach(sem => {
         dataBurn.addRow([sem, semanas[sem]]);
     });
@@ -309,9 +294,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
     });
 }
 
-// ==========================================
-// 5. ESTILIZAÇÃO E BADGES DINÂMICOS (DOM)
-// ==========================================
+// Altera cores e fundo de certas "Escritas" nas tabelas
 function colorirNomesTabela() {
     const container = document.getElementById('output');
     if (!container) return;
@@ -352,9 +335,7 @@ function colorirNomesTabela() {
     });
 }
 
-// ==========================================
-// 6. PIPELINE DE FILTROS DINÂMICOS
-// ==========================================
+// 6.  FILTROS DA TABELA
 function filtrarTabela() {
     const busca = document.getElementById('busca').value.toUpperCase();
     const areaSelecionada = document.getElementById('areaBox').value.toUpperCase();
@@ -407,14 +388,11 @@ document.getElementById('busca').addEventListener('input', filtrarTabela);
 document.getElementById('areaBox').addEventListener('change', filtrarTabela);
 document.getElementById('tipoBox').addEventListener('change', filtrarTabela);
 
-// ==========================================
 // 7. CARREGAMENTO DO SERVIDOR
-// ==========================================
+
 function carregarMenuBanco() {
     const select = document.getElementById('selectSprint');
     if (!select) return;
-
-    // 1. TENTA SOLICITAR OS DADOS EM TEMPO REAL AO SERVIDOR (MODO ONLINE)
     fetch('http://localhost:3000/api/sprints-da-pasta')
         .then(res => {
             if (!res.ok) throw new Error('Servidor offline');
@@ -425,10 +403,7 @@ function carregarMenuBanco() {
             popularSelectComMapeamento(listaSprints, true);
         })
         .catch(err => {
-            // 2. CASO O SERVIDOR ESTEJA DESLIGADO (FALLBACK ESTÁTICO PARA OFFLINE / GITHUB PAGES)
             console.warn('Servidor local offline. Carregando índice estático da pasta utils...');
-            
-            // Faz a leitura direta do arquivo JSON estático gerado pelo monday.js
             fetch('./utils/sprints.json')
                 .then(resOffline => {
                     if (!resOffline.ok) throw new Error('Índice sprints.json não localizado');
@@ -450,15 +425,12 @@ function popularSelectComMapeamento(lista, servidorOnline) {
 
     lista.forEach(sprint => {
         const opt = document.createElement('option');
-        
-        // Se o servidor estiver rodando, monta a URL para bater no barramento Node. 
-        // Se estiver offline, aponta para o caminho relativo local de forma estática pura.
         if (servidorOnline) {
             opt.value = sprint.caminho_arquivo.startsWith('http') ? sprint.caminho_arquivo : `http://localhost:3000/${sprint.caminho_arquivo}`;
         } else {
             opt.value = `./${sprint.caminho_arquivo}`;
         }
-        
+
         opt.textContent = sprint.nome_exibicao;
         select.appendChild(opt);
     });
