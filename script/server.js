@@ -33,7 +33,7 @@ const { sincronizarMondaySprints } = require('./monday');
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3008;
 
 // Define o caminho da pasta 'utils' na raiz do projeto (um nível acima)
 const dirPath = path.join(__dirname, '..', 'utils');

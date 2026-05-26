@@ -13,7 +13,7 @@ document.getElementById('btnSyncMovidesk').addEventListener('click', async funct
     btn.style.opacity = '0.6';
 
     try {
-        const response = await fetch('http://localhost:3000/api/sincronizar-movidesk?sprint=Geral');
+        const response = await fetch('http://localhost:3008/api/sincronizar-movidesk?sprint=Geral');
         const data = await response.json();
         if (data.success) {
             alert('Movidesk sincronizado com sucesso!');
@@ -38,7 +38,7 @@ document.getElementById('btnSyncMonday').addEventListener('click', async functio
     btn.style.opacity = '0.6';
 
     try {
-        const response = await fetch('http://localhost:3000/api/sincronizar-monday-sprints');
+        const response = await fetch('http://localhost:3008/api/sincronizar-monday-sprints');
         const data = await response.json();
         if (data.success) {
             alert('Monday sincronizado. Arquivos gerados: ' + (data.files || []).join(', '));
@@ -393,7 +393,7 @@ document.getElementById('tipoBox').addEventListener('change', filtrarTabela);
 function carregarMenuBanco() {
     const select = document.getElementById('selectSprint');
     if (!select) return;
-    fetch('http://localhost:3000/api/sprints-da-pasta')
+    fetch('http://localhost:3008/api/sprints-da-pasta')
         .then(res => {
             if (!res.ok) throw new Error('Servidor offline');
             return res.json();
@@ -426,7 +426,7 @@ function popularSelectComMapeamento(lista, servidorOnline) {
     lista.forEach(sprint => {
         const opt = document.createElement('option');
         if (servidorOnline) {
-            opt.value = sprint.caminho_arquivo.startsWith('http') ? sprint.caminho_arquivo : `http://localhost:3000/${sprint.caminho_arquivo}`;
+            opt.value = sprint.caminho_arquivo.startsWith('http') ? sprint.caminho_arquivo : `http://localhost:3008/${sprint.caminho_arquivo}`;
         } else {
             opt.value = `./${sprint.caminho_arquivo}`;
         }
