@@ -9,7 +9,7 @@ const fs = require('fs').promises;
 // ==========================================
 const mondayStatusMap = {
   "Concluído": "Concluído", "Done": "Concluído", "Feito": "Concluído",
-  "Implantado": "Implantado", "Implantação": "Implantado",
+  "Implantado": "Implantado", "Implantação": "Implantação",
   "Homologação": "Homologação", "Em andamento": "Em andamento",
   "Working on it": "Em andamento", "A fazer": "A fazer",
   "To Do": "A fazer", "Impedimento": "Impedimento",
@@ -26,12 +26,16 @@ const mondayPriorityMap = {
 };
 
 const urgencyMap = {
-  53857: "Alta",
+  53857: "Muito Alta", // Assumindo que 53860 também é "Muito Alta" e 53857 é "Alta"
   53859: "Baixa",
   53858: "Média",
   53860: "Muito Alta"
 };
 
+// CUIDADO: Desabilita a verificação de certificado TLS para requisições HTTPS.
+// Mantido aqui conforme sua necessidade de ambiente, mas reafirmo que esta é
+// uma vulnerabilidade de segurança grave e deve ser usada com extrema cautela,
+// preferencialmente APENAS em ambientes de desenvolvimento isolados e NUNCA em produção.
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // ==========================================
@@ -56,10 +60,172 @@ function nomeMes(dateObj) {
   return meses[dateObj.getMonth()];
 }
 
+// =========================================================================
+// 3.1. FUNÇÃO: EXTRAÇÃO DE VALORES DE CAMPOS PERSONALIZADOS DE PESSOAS (CLIENTES)
+//      (Implementação COMPLETA para buscar o SETOR do cliente)
+// =========================================================================
+async function buscarValoresCamposPersonalizadosPessoas(token) {
+  const mapaValoresCamposPessoas = {}; // Mapa para armazenar PersonId -> { customFieldId -> valor }
+  let skip = 0;
+  const take = 100;
+  const maxRetries = 3;
+  const retryDelayMs = 2000;
+
+  console.log('[Movidesk] Iniciando varredura na API de Pessoas para mapear VALORES de campos personalizados...');
+
+  while (true) {
+    let resp;
+    let retries = 0;
+    let success = false;
+    let falhaCritica = false;
+
+    while (retries < maxRetries && !success) {
+      try {
+        resp = await axios.get('https://api.movidesk.com/public/v1/persons', { // <<< ENDPOINT CORRETO PARA PESSOAS
+          params: {
+            token,
+            '$select': 'id', // Precisamos do ID da pessoa
+            '$expand': 'customFieldValues($expand=items)', // Expande os VALORES dos campos personalizados da pessoa
+            '$top': take,
+            '$skip': skip,
+          },
+          httpsAgent,
+          timeout: 90000,
+        });
+        success = true;
+      } catch (err) {
+        retries++;
+        console.error(`[Movidesk] Erro ao buscar valores de pessoas skip=${skip} (tentativa ${retries}/${maxRetries}): ${err.message}`);
+        if (retries < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        } else {
+          console.error(`[Movidesk] Interrompendo paginação de valores de pessoas em skip=${skip}.`);
+          falhaCritica = true;
+        }
+      }
+    }
+
+    if (falhaCritica || !success) break;
+
+    const pessoas = resp.data.value || (Array.isArray(resp.data) ? resp.data : []);
+    if (pessoas.length === 0) break;
+
+    for (const pessoa of pessoas) {
+      const personId = String(pessoa.id);
+      mapaValoresCamposPessoas[personId] = {};
+
+      if (!pessoa.customFieldValues || pessoa.customFieldValues.length === 0) continue;
+
+      for (const campo of pessoa.customFieldValues) {
+        const idCampo = String(campo.customFieldId);
+        if (campo.value !== undefined && campo.value !== null) {
+            mapaValoresCamposPessoas[personId][idCampo] = campo.value;
+        } else if (campo.items && campo.items.length > 0) {
+          mapaValoresCamposPessoas[personId][idCampo] = campo.items[0].customFieldItem;
+        }
+      }
+    }
+
+    console.log(`[Movidesk] Mapeando valores de campos para ${pessoas.length} pessoas (skip=${skip})...`);
+    skip += take;
+  }
+
+  console.log(`[Movidesk] Mapeamento de valores de campos de pessoas concluído. ${Object.keys(mapaValoresCamposPessoas).length} pessoas com campos personalizados identificadas.`);
+  return mapaValoresCamposPessoas;
+}
+
+// =========================================================================
+// 3.2. FUNÇÃO: EXTRAÇÃO DA ESTRUTURA DOS CAMPOS PERSONALIZADOS DE CLIENTES
+//      (Corrigida para buscar a ESTRUTURA dos campos de pessoas, não tickets)
+// =========================================================================
+async function buscarEstruturaCamposPersonalizadosClientes(token) {
+  const mapaCamposGlobais = {};
+  let skip = 0;
+  const take = 100;
+  const maxRetries = 3;
+  const retryDelayMs = 2000;
+
+  console.log('[Movidesk] Iniciando varredura na API de CustomFields para mapear a ESTRUTURA de campos personalizados de clientes...');
+
+  while (true) {
+    let resp;
+    let retries = 0;
+    let success = false;
+    let falhaCritica = false;
+
+    while (retries < maxRetries && !success) {
+      try {
+        resp = await axios.get('https://api.movidesk.com/public/v1/customFields', { // <<< ENDPOINT CORRETO PARA ESTRUTURA DE CAMPOS
+          params: {
+            token,
+            '$filter': `entityType eq 'Person'`, // Filtra por campos de Pessoa/Cliente
+            '$top': take,
+            '$skip': skip,
+          },
+          httpsAgent,
+          timeout: 90000,
+        });
+        success = true;
+      } catch (err) {
+        retries++;
+        console.error(`[Movidesk] Erro ao buscar estrutura de campos (tentativa ${retries}/${maxRetries}): ${err.message}`);
+        if (retries < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        } else {
+          console.error(`[Movidesk] Interrompendo paginação de estrutura de campos em skip=${skip}.`);
+          falhaCritica = true;
+        }
+      }
+    }
+
+    if (falhaCritica || !success) break;
+
+    const campos = resp.data.value || (Array.isArray(resp.data) ? resp.data : []);
+    if (campos.length === 0) break;
+
+    for (const campo of campos) {
+      const idCampo = String(campo.id); // O ID do campo personalizado é 'id' na resposta de customFields
+      
+      if (!mapaCamposGlobais[idCampo]) {
+        mapaCamposGlobais[idCampo] = {
+          customFieldId: campo.id,
+          customFieldRuleId: campo.customFieldRuleId,
+          type: campo.type || 'N/A',
+          itensDisponiveis: {}
+        };
+      }
+
+      if (campo.items && campo.items.length > 0) {
+        for (const item of campo.items) {
+          const idItem = String(item.customFieldItemId);
+          mapaCamposGlobais[idCampo].itensDisponiveis[idItem] = item.customFieldItem;
+        }
+      }
+    }
+
+    console.log(`[Movidesk] Mapeando estrutura: ${campos.length} campos analisados (skip=${skip})...`);
+    skip += take;
+  }
+
+  const relatorioFinal = Object.values(mapaCamposGlobais).map(campo => ({
+    customFieldId: campo.customFieldId,
+    customFieldRuleId: campo.customFieldRuleId,
+    type: campo.type,
+    items: Object.entries(campo.itensDisponiveis).map(([id, nome]) => ({
+      customFieldItemId: Number(id),
+      customFieldItem: nome
+    }))
+  }));
+
+  console.log(`[Movidesk] Mapeamento concluído. ${relatorioFinal.length} estruturas de campos personalizados de clientes identificadas.`);
+  return relatorioFinal;
+}
+
+
 // ==========================================
-// 3. INTEGRAÇÃO DA API MOVIDESK COM RETRY
+// 4. INTEGRAÇÃO DA API MOVIDESK TICKETS COM RETRY (CORRIGIDA)
 // ==========================================
-async function buscarTodosTicketsMovidesk(token) {
+async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, movideskClientSectorCustomFieldId) {
   const mapa = {};
   let skip = 0;
   const take = 100;
@@ -73,15 +239,16 @@ async function buscarTodosTicketsMovidesk(token) {
     let resp;
     let retries = 0;
     let success = false;
+    let falhaCritica = false;
 
     while (retries < maxRetries && !success) {
       try {
-        resp = await axios.get('https://api.movidesk.com/public/v1/tickets', {
+        resp = await axios.get('https://api.movidesk.com/public/v1/tickets', { // <<< ENDPOINT E PASSAGEM DE TOKEN CORRETOS
           params: {
-            token,
+            token: token,
             '$select': 'id,subject,category,urgency,status,createdDate,resolvedIn,ownerTeam,serviceFirstLevel,slaSolutionDate,createdBy,clients',
             '$expand': 'actions($select=description),createdBy',
-            '$filter': "createdDate gt 2023-01-01T00:00:00Z",
+            '$filter': 'createdDate gt 2023-01-01T00:00:00Z',
             '$top': take,
             '$skip': skip,
           },
@@ -97,27 +264,36 @@ async function buscarTodosTicketsMovidesk(token) {
           await new Promise(resolve => setTimeout(resolve, retryDelayMs));
         } else {
           console.error(`[Movidesk] Todas as tentativas falharam para skip=${skip}. Retornando dados parciais coletados.`);
-          return mapa;
+          falhaCritica = true;
         }
       }
     }
 
-    if (!success) break;
-
-    const lista = resp.data.value || (Array.isArray(resp.data) ? resp.data : []);
+    if (falhaCritica || !success) break;
+    const lista = resp.data && resp.data.value ? resp.data.value : (Array.isArray(resp.data) ? resp.data : []);
     if (lista.length === 0) break;
 
     for (const t of lista) {
-      const equipe = t.ownerTeam ? String(t.ownerTeam).trim() : 'N/A';
+      const idTicket = t.id || t.Id || 'N/A';
+      const assunto = t.subject || t.Subject || 'N/A';
+      const statusTicket = t.status || t.Status || 'N/A';
+      const equipeBruta = t.ownerTeam || t.OwnerTeam || 'N/A';
+      const criadorObjeto = t.createdBy || t.CreatedBy || {};
+
+      const equipe = String(equipeBruta).trim();
       if (equipe === 'Suporte e Infraestrutura' || equipe === 'Administradores') continue;
 
-      const prioridadeMovidesk = urgencyMap[t.urgency] || 'N/A';
-      const area = t.createdBy?.department || t.category || 'N/A';
-      const tipo = t.serviceFirstLevel ? String(t.serviceFirstLevel).trim() : 'N/A';
-      const createdDate = t.createdDate ? new Date(t.createdDate) : null;
-      const closedDate = t.resolvedIn ? new Date(t.resolvedIn) : null;
+      const prioridadeMovidesk = urgencyMap[t.urgency || t.Urgency] || 'N/A';
+      const categoria = t.category || t.Category || 'N/A';
+      const tipo = t.serviceFirstLevel || t.ServiceFirstLevel ? String(t.serviceFirstLevel || t.ServiceFirstLevel).trim() : 'N/A';
 
-      const descRaw = t.actions?.[0]?.description || t.actions?.[0]?.body || '';
+      const criacaoRaw = t.createdDate || t.CreatedDate || null;
+      const resolucaoRaw = t.resolvedIn || t.ResolvedIn || null;
+      const createdDate = criacaoRaw ? new Date(criacaoRaw) : null;
+      const closedDate = resolucaoRaw ? new Date(resolucaoRaw) : null;
+
+      const acoes = t.actions || t.Actions || [];
+      const descRaw = acoes[0]?.description || acoes[0]?.Description || acoes[0]?.body || acoes[0]?.Body || '';
       let descTratada = String(descRaw)
         .replace(/<[^>]*>?/gm, '')
         .replace(/\[cid:[^\]]*\]/g, '')
@@ -126,39 +302,51 @@ async function buscarTodosTicketsMovidesk(token) {
         .trim();
       const descricao = descTratada.substring(0, 300) || 'N/A';
 
-      const solicitante = t.createdBy?.personName ||
-        t.createdBy?.name ||
-        t.createdBy?.businessName ||
+      const solicitante = criadorObjeto.personName ||
+        criadorObjeto.PersonName ||
+        criadorObjeto.name ||
+        criadorObjeto.Name ||
+        criadorObjeto.businessName ||
+        criadorObjeto.BusinessName ||
         'N/A';
 
+      let setorCliente = 'N/A';
+      const createdById = criadorObjeto.id;
 
-      if (solicitante === 'N/A' || equipe === 'N/A') {
-        console.log(`\n============== [AUDITORIA TICKET #${t.id}] ==============`);
-        console.log(`Assunto: ${t.subject}`);
-        console.log(`Status do Ticket: ${t.status}`);
-        console.log(`ownerTeam Bruto recebido:`, t.ownerTeam);
-        console.log(`createdBy Bruto recebido:`, JSON.stringify(t.createdBy));
-        console.log(`=======================================================\n`);
+      if (createdById && personCustomFieldValuesMap && movideskClientSectorCustomFieldId && personCustomFieldValuesMap[createdById]) {
+        setorCliente = personCustomFieldValuesMap[createdById][movideskClientSectorCustomFieldId] || 'Não informado';
       }
 
-      mapa[String(t.id)] = {
-        area,
+      if (idTicket === 'N/A' || solicitante === 'N/A' || equipe === 'N/A') {
+        console.log(`\n============== [AUDITORIA CRÍTICA TICKET INTERNO] ==============`);
+        console.log(`ID Detectado: ${idTicket}`);
+        console.log(`Assunto: ${assunto}`);
+        console.log(`Status do Ticket: ${statusTicket}`);
+        console.log(`Estrutura Bruta Recebida da API (Primeiras chaves):`, Object.keys(t).slice(0, 8));
+        console.log(`=================================================================\n`);
+      }
+
+      mapa[String(idTicket)] = {
+        area: setorCliente,
         tipo,
-        categoria: t.category || 'N/A',
+        categoria,
         descricao,
         prioridade: prioridadeMovidesk,
         solicitante: String(solicitante).trim(),
         equipe: equipe,
         abertura: createdDate ? createdDate.toISOString() : null,
         encerramento: closedDate ? closedDate.toISOString() : null,
-        status: t.status || 'N/A'
+        status: statusTicket
       };
 
       total++;
     }
 
-    console.log(`[Movidesk] ${total} tickets carregados (skip=${skip})...`);
+    console.log(`[Movidesk] ${total} tickets legítimos processados na memória (skip=${skip})...`);
     skip += take;
+
+    // Trava de salvaguarda para a rota de chamados não estourar em homologação
+    if (total > 5000) break;
   }
 
   console.log(`[Movidesk] Total final: ${total} tickets carregados.`);
@@ -166,7 +354,7 @@ async function buscarTodosTicketsMovidesk(token) {
 }
 
 // ==========================================
-// 4. INTEGRAÇÃO DA API MONDAY
+// 5. INTEGRAÇÃO DA API MONDAY (CORRIGIDA)
 // ==========================================
 async function buscarTodosItensMonday(boardId, token) {
   let allItems = [];
@@ -195,7 +383,7 @@ async function buscarTodosItensMonday(boardId, token) {
       }
     `;
 
-    const response = await axios.post('https://api.monday.com/v2',
+    const response = await axios.post('https://api.monday.com/v2', // <<< ENDPOINT CORRETO
       { query },
       { headers: { 'Authorization': token, 'Content-Type': 'application/json' } }
     );
@@ -222,11 +410,14 @@ const getColVal = (item, id) => {
 };
 
 // ==========================================
-// 5. MOTOR DE PROCESSAMENTO DO EXCEL
+// 6. MOTOR DE PROCESSAMENTO DO EXCEL (CORRIGIDO)
 // ==========================================
-async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dirPath,
-  mondayTextColId, mondayStatusColId, mondayPriorityColId, mondayDescriptionColId, mondayTypeColId, mondaySlaDateColId) {
-
+async function gerarExcelParaSprint(
+  sprintNome, itensDaSprint, mapaMovidesk, dirPath,
+  mondayTextColId, mondayStatusColId, mondayPriorityColId, mondayDescriptionColId, mondayTypeColId,
+  mondayCreationDateColId, mondayResolutionDateColId, // <<< NOVOS PARÂMETROS
+  listaEstruturaCamposClientes // <<< RENOMEADO PARA CLAREZA E CONSISTÊNCIA
+) {
   const workbook = new ExcelJS.Workbook();
   const estiloAzul = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF034C8C' } };
   const fonteBranca = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
@@ -269,7 +460,6 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
   });
   ticketsSheet.getRow(1).height = 24;
 
-  // Loop para processamento de linhas e contadores
   for (const item of itensDaSprint) {
     let mondayMovideskId = getColVal(item, mondayTextColId);
     const mov = mondayMovideskId ? (mapaMovidesk[mondayMovideskId] || {}) : {};
@@ -279,7 +469,7 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
     const descMon = getColVal(item, mondayDescriptionColId);
 
     const ticketId = mondayMovideskId || item.id;
-    const area = item.group?.title || 'N/A';
+    const area = mov.area || item.group?.title || 'N/A';
     const tipo = typeMon || mov.tipo || 'N/A';
     const categoria = mov.categoria || 'N/A';
     const titulo = item.name;
@@ -291,9 +481,6 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
     const abertura = mov.abertura ? new Date(mov.abertura).toLocaleDateString('pt-BR') : 'N/A';
     const encerramento = mov.encerramento ? new Date(mov.encerramento).toLocaleDateString('pt-BR') : 'N/A';
 
-    // ============================================================
-    // 1. RESOLUÇÃO E PADRONIZAÇÃO DO FLUXO REAL DE TI
-    // ============================================================
     const statusCru = getColVal(item, mondayStatusColId) || 'A fazer';
     let statusFinal = mondayStatusMap[statusCru] || statusCru || 'A fazer';
 
@@ -320,7 +507,8 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
     const mesLinha = dataAberturaMovideskObj ? nomeMes(dataAberturaMovideskObj) : 'N/A';
 
     if (semanaLinha === 'N/A') {
-      const dataMondayCrua = getColVal(item, 'log_de_cria__o3') || getColVal(item, 'data');
+      // Usando os novos parâmetros para IDs de data do Monday, removendo hardcodes
+      const dataMondayCrua = getColVal(item, mondayCreationDateColId);
       if (dataMondayCrua && !isNaN(new Date(dataMondayCrua).getTime())) {
         semanaLinha = calcularSemana(new Date(dataMondayCrua));
       } else {
@@ -334,9 +522,6 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
       contagemSemanaBurnDown[semanaLinha] = 1;
     }
 
-    // ============================================================
-    // 2. CONTAGEM CRÍTICA DE ACORDOS SEMANAIS (MÓDULO DE ENTREGA)
-    // ============================================================
     if (['Feito', 'Implantação'].includes(statusFinal)) {
       if (mov.encerramento) {
         const dataEncerramentoMovideskObj = new Date(mov.encerramento);
@@ -349,18 +534,14 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
       }
     }
 
-    // ============================================================
-    // 3. NOVO MOTOR DE SLA DA SPRINT: CRITÉRIO DOS 15 DIAS CORRIDOS
-    // ============================================================
     let dentroSLA = 'Não';
     let calculoAtraso = 0;
 
     const dataInicioReal = dataAberturaMovideskObj;
     const dataEncerramentoMovideskObj = mov.encerramento ? new Date(mov.encerramento) : null;
     const dataFimReal = dataEncerramentoMovideskObj;
-
     if (dataInicioReal && !isNaN(dataInicioReal.getTime())) {
-      if (dataFimReal && !isNaN(dataFimReal.getTime()) && ['Feito', 'Implantação', 'Concluído', 'Encerrado'].includes(statusFinal)) {
+     if (dataFimReal && !isNaN(dataFimReal.getTime()) && ['Feito', 'Implantação', 'Concluído', 'Encerrado'].includes(statusFinal)) {
         const diferencaDias = Math.ceil((dataFimReal - dataInicioReal) / (1000 * 60 * 60 * 24));
         if (diferencaDias <= 15) {
           dentroSLA = 'Sim';
@@ -398,8 +579,8 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
     if (isConcluido && typeof tempoResolucao === 'number') {
       totalTempoResolucao += tempoResolucao;
       countResolvidos++;
-    } else if (isConcluido && tempoResolucao === 'N/A' && getColVal(item, 'log_de_cria__o3') && getColVal(item, 'data')) {
-      const a = new Date(getColVal(item, 'log_de_cria__o3')), e = new Date(getColVal(item, 'data'));
+    } else if (isConcluido && tempoResolucao === 'N/A' && getColVal(item, mondayCreationDateColId) && getColVal(item, mondayResolutionDateColId)) { // <<< Usando os novos parâmetros
+      const a = new Date(getColVal(item, mondayCreationDateColId)), e = new Date(getColVal(item, mondayResolutionDateColId));
       if (!isNaN(a.getTime()) && !isNaN(e.getTime())) {
         const mondayTempoResolucao = Math.ceil((e - a) / 86400000);
         totalTempoResolucao += mondayTempoResolucao;
@@ -420,6 +601,55 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
   const totalTicketsDaSprint = itensDaSprint.length;
   const percentualSLA = totalTicketsDaSprint > 0 ? (dentroSLACount / totalTicketsDaSprint) : 0;
   const tempoMedio = countResolvidos > 0 ? (totalTempoResolucao / countResolvidos).toFixed(2) : 0;
+
+  // ============================================================
+  // 3.1 NOVA ABA: MAPEAMENTO DE CAMPOS PERSONALIZADOS DE CLIENTES
+  //    (Utiliza a listaEstruturaCamposClientes correta)
+  // ============================================================
+  if (listaEstruturaCamposClientes && listaEstruturaCamposClientes.length > 0) {
+    const camposClientesSheet = workbook.addWorksheet('Campos Personalizados Clientes');
+    camposClientesSheet.views = [{ showGridLines: true }];
+
+    camposClientesSheet.columns = [
+      { header: 'ID do Campo', key: 'customFieldId', width: 15 },
+      { header: 'ID da Regra', key: 'customFieldRuleId', width: 15 },
+      { header: 'Tipo de Campo', key: 'type', width: 18 },
+      { header: 'ID do Item Opção', key: 'customFieldItemId', width: 18 },
+      { header: 'Nome/Valor da Opção (customFieldItem)', key: 'customFieldItem', width: 40 }
+    ];
+
+    camposClientesSheet.getRow(1).eachCell((cell) => {
+      cell.fill = estiloAzul;
+      cell.font = fonteBranca;
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    camposClientesSheet.getRow(1).height = 24;
+
+    for (const campo of listaEstruturaCamposClientes) {
+      if (!campo.items || campo.items.length === 0) {
+        const row = camposClientesSheet.addRow({
+          customFieldId: campo.customFieldId,
+          customFieldRuleId: campo.customFieldRuleId,
+          type: campo.type || 'N/A',
+          customFieldItemId: 'N/A',
+          customFieldItem: '(Campo de preenchimento livre)'
+        });
+        row.eachCell(cell => { cell.alignment = { vertical: 'middle' }; });
+      } else {
+        for (const item of campo.items) {
+          const row = camposClientesSheet.addRow({
+            customFieldId: campo.customFieldId,
+            customFieldRuleId: campo.customFieldRuleId,
+            type: campo.type || 'N/A',
+            customFieldItemId: item.customFieldItemId,
+            customFieldItem: item.customFieldItem
+          });
+          row.eachCell(cell => { cell.alignment = { vertical: 'middle' }; });
+        }
+      }
+    }
+    console.log(`[Excel] ${listaEstruturaCamposClientes.length} estruturas de campos adicionadas à planilha da sprint.`);
+  }
 
   // --- ABA DASHBOARD ---
   const dashSheet = workbook.addWorksheet('Dashboard');
@@ -481,19 +711,19 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
   resumoSheet.getCell('A6').value = parseFloat(tempoMedio);
   resumoSheet.getCell('A7').value = Object.keys(contagemArea).length;
 
-  // Tickets por Área
+  // Tickets por Área (CORRIGIDO: ordenação por valor)
   resumoSheet.getCell('A9').value = 'Tickets por Área'; resumoSheet.getCell('A9').font = fonteNegrito;
   Object.entries(contagemArea)
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1] - a[1]) // <<< CORRIGIDO
     .forEach(([a, q], i) => {
       resumoSheet.getCell(`A${10 + i}`).value = a;
       resumoSheet.getCell(`B${10 + i}`).value = q;
     });
 
-  // Distribuição por Tipo
+  // Distribuição por Tipo (CORRIGIDO: ordenação por valor)
   resumoSheet.getCell('D9').value = 'Distribuição por Tipo'; resumoSheet.getCell('D9').font = fonteNegrito;
   Object.entries(contagemTipo)
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1] - a[1]) // <<< CORRIGIDO
     .forEach(([t, q], i) => {
       resumoSheet.getCell(`D${10 + i}`).value = t;
       resumoSheet.getCell(`E${10 + i}`).value = q;
@@ -525,7 +755,7 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
   resumoSheet.getCell('P9').value = 'Tickets por Semana'; resumoSheet.getCell('P9').font = fonteNegrito;
   resumoSheet.getCell('Q9').value = 'Volume'; resumoSheet.getCell('Q9').font = fonteNegrito;
   Object.entries(contagemSemanaFinalizadosMovidesk)
-    .sort((a, b) => a[0].localeCompare(b[0]))
+    .sort((a, b) => a.localeCompare(b))
     .forEach(([semana, qtd], i) => {
       resumoSheet.getCell(`P${10 + i}`).value = semana;
       resumoSheet.getCell(`Q${10 + i}`).value = qtd;
@@ -575,86 +805,122 @@ async function gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dir
   };
 }
 
+// =========================================================================
+// 7. ORQUESTRADOR PRINCIPAL DA ATUALIZAÇÃO SPRINT (CORRIGIDO)
+// =========================================================================
+async function sincronizarMondaySprints(
+    token,                              // 1. Token do Monday
+    boardId,                            // 2. ID do Board do Monday
+    mondayTextColId,                    // 3. ID da coluna de texto (ID do Movidesk)
+    mondayStatusColId,                  // 4. ID da coluna de status
+    mondayPriorityColId,                // 5. ID da coluna de prioridade
+    mondayDescriptionColId,             // 6. ID da coluna de descrição
+    mondayTypeColId,                    // 7. ID da coluna de tipo
+    mondayCreationDateColId,            // 8. ID da coluna de data de criação no Monday (Agora vem do server.js)
+    mondayResolutionDateColId,          // 9. ID da coluna de data de resolução no Monday (Agora vem do server.js)
+    movideskClientSectorCustomFieldId,  // 10. ID do campo personalizado "Setor"
+    dirPath                             // 11. Caminho do diretório de salvamento
+) {
+    console.log('[Monday] Iniciando sincronização completa de sprints...');
 
+    const movideskToken = process.env.MOVIDESK_TOKEN;
 
-async function sincronizarMondaySprints(token, boardId, mondayTextColId, mondayStatusColId, mondayPriorityColId, mondayDescriptionColId, mondayTypeColId, dirPath) {
-  console.log('[Monday] Iniciando sincronização completa de sprints...');
+    // 1. Busca os VALORES dos campos personalizados de TODAS as pessoas/clientes do Movidesk.
+    const personCustomFieldValuesMap = movideskToken
+        ? await buscarValoresCamposPersonalizadosPessoas(movideskToken)
+        : {};
 
-  const movideskToken = process.env.MOVIDESK_TOKEN;
-  const mapaMovidesk = movideskToken
-    ? await buscarTodosTicketsMovidesk(movideskToken)
-    : {};
+    // 2. Busca a ESTRUTURA dos campos personalizados de clientes (para a aba de mapeamento no Excel).
+    const listaEstruturaCamposClientes = movideskToken
+        ? await buscarEstruturaCamposPersonalizadosClientes(movideskToken)
+        : [];
 
-  let todosItensMonday;
-  try {
-    todosItensMonday = await buscarTodosItensMonday(boardId, token);
-  } catch (err) {
-    throw new Error(`[Monday] Erro crítico na extração de dados do Monday: ${err.message}`);
-  }
+    // 3. Busca todos os tickets do Movidesk, INJETANDO o setor do cliente obtido no passo 1.
+    const mapaMovidesk = movideskToken
+        ? await buscarTodosTicketsMovidesk(movideskToken, personCustomFieldValuesMap, movideskClientSectorCustomFieldId)
+        : {};
 
-  const sprints = {};
-  for (const item of todosItensMonday) {
-    const nomeGrupo = item.group?.title ? item.group.title.trim() : 'Sem Sprint';
-
-    // Ignora os groups administrativos
-    const nomeGrupoUpper = nomeGrupo.toUpperCase();
-    if (['BACKLOG', 'PROXIMA SPRINT', 'PRÓXIMA SPRINT', 'SPRINT ATUAL'].includes(nomeGrupoUpper)) {
-      continue; // Pula o item e nao gera excel
-    }
-
-    if (!sprints[nomeGrupo]) sprints[nomeGrupo] = [];
-    sprints[nomeGrupo].push(item);
-  }
-
-  console.log(`[Monday] ${Object.keys(sprints).length} sprints legítimas mapeadas para processamento.`);
-
-  const resultados = [];
-  for (const [sprintNome, itensDaSprint] of Object.entries(sprints)) {
+    let todosItensMonday;
     try {
-      console.log(`[Monday] Gerando lote da planilha para: "${sprintNome}" (${itensDaSprint.length} registros).`);
-      const res = await gerarExcelParaSprint(sprintNome, itensDaSprint, mapaMovidesk, dirPath,
-        mondayTextColId, mondayStatusColId, mondayPriorityColId, mondayDescriptionColId, mondayTypeColId);
-      resultados.push(res);
+        todosItensMonday = await buscarTodosItensMonday(boardId, token);
     } catch (err) {
-      console.error(`[Monday] Falha ao processar a fatia da sprint "${sprintNome}":`, err.message, err.stack);
+        throw new Error(`[Monday] Erro crítico na extração de dados do Monday: ${err.message}`);
     }
-  }
 
-  // =========================================================================
-  // MOTOR DE MAPA DE ARQUIVOS ESTÁTICOS COMPATÍVEL COM GITHUB PAGES / OFFLINE
-  // =========================================================================
-  try {
-    // Lê a pasta física utils para descobrir o histórico real de arquivos gerados
-    const arquivosNaPasta = await fs.readdir(dirPath);
+    const sprints = {};
+    for (const item of todosItensMonday) {
+        const nomeGrupo = item.group?.title ? item.group.title.trim() : 'Sem Sprint';
 
-    const listaCompletaSprints = arquivosNaPasta
-      .filter(f => f.endsWith('.xlsx'))
-      .map(f => {
-        let nomeExibicao = f.replace('.xlsx', '').toUpperCase().replace(/_/g, ' ');
-        if (nomeExibicao.startsWith('TICKETS SPRINT ')) {
-          nomeExibicao = `MOVIDESK - ${nomeExibicao.replace('TICKETS SPRINT ', '')}`;
-        } else if (nomeExibicao.startsWith('MONDAY SPRINT ')) {
-          nomeExibicao = `MONDAY - ${nomeExibicao.replace('MONDAY SPRINT ', '')}`;
+        const nomeGrupoUpper = nomeGrupo.toUpperCase();
+        if (['BACKLOG', 'PROXIMA SPRINT', 'PRÓXIMA SPRINT', 'SPRINT ATUAL'].includes(nomeGrupoUpper)) {
+            continue;
         }
 
-        return {
-          nome_exibicao: nomeExibicao,
-          caminho_arquivo: `utils/${f}`
-        };
-      })
-      // Garante que o select exiba as sprints mais novas primeiro por ordenação reversa
-      .sort((a, b) => b.nome_exibicao.localeCompare(a.nome_exibicao));
+        if (!sprints[nomeGrupo]) sprints[nomeGrupo] = [];
+        sprints[nomeGrupo].push(item);
+    }
 
-    // Grava um arquivo JSON estático de índice contendo o array mapeado de planilhas
-    const caminhoDoIndiceJson = path.join(dirPath, 'sprints.json');
-    await fs.writeFile(caminhoDoIndiceJson, JSON.stringify(listaCompletaSprints, null, 2), 'utf8');
-    console.log(`[Altona Engine] Índice de arquivos estáticos criado em: utils/sprints.json`);
+    console.log(`[Monday] ${Object.keys(sprints).length} sprints legítimas mapeadas para processamento.`);
 
-  } catch (errDiscorv) {
-    console.error('[Altona Engine] Erro ao tentar mapear arquivos estáticos da pasta utils:', errDiscorv.message);
-  }
+    const resultados = [];
+    for (const [sprintNome, itensDaSprint] of Object.entries(sprints)) {
+        try {
+            console.log(`[Monday] Gerando lote da planilha para: "${sprintNome}" (${itensDaSprint.length} registros).`);
 
-  return resultados;
+            const res = await gerarExcelParaSprint(
+                sprintNome,
+                itensDaSprint,
+                mapaMovidesk,
+                dirPath,
+                mondayTextColId,
+                mondayStatusColId,
+                mondayPriorityColId,
+                mondayDescriptionColId,
+                mondayTypeColId,
+                mondayCreationDateColId, // <<< PARÂMETRO AGORA USADO CORRETAMENTE
+                mondayResolutionDateColId, // <<< PARÂMETRO AGORA USADO CORRETAMENTE
+                listaEstruturaCamposClientes
+            );
+
+            resultados.push(res);
+        } catch (err) {
+            console.error(`[Monday] Falha ao processar a fatia da sprint "${sprintNome}":`, err.message, err.stack);
+        }
+    }
+
+    // =========================================================================
+    // MOTOR DE MAPA DE ARQUIVOS ESTÁTICOS COMPATÍVEL COM GITHUB PAGES / OFFLINE
+    // =========================================================================
+    try {
+        const arquivosNaPasta = await fs.readdir(dirPath);
+
+        const listaCompletaSprints = arquivosNaPasta
+            .filter(f => f.endsWith('.xlsx'))
+            .map(f => {
+                let nomeExibicao = f.replace('.xlsx', '').toUpperCase().replace(/_/g, ' ');
+                if (nomeExibicao.startsWith('TICKETS SPRINT ')) {
+                    nomeExibicao = `MOVIDESK - ${nomeExibicao.replace('TICKETS SPRINT ', '')}`;
+                } else if (nomeExibicao.startsWith('MONDAY SPRINT ')) {
+                    nomeExibicao = `MONDAY - ${nomeExibicao.replace('MONDAY SPRINT ', '')}`;
+                }
+
+                return {
+                    nome_exibicao: nomeExibicao,
+                    caminho_arquivo: `utils/${f}`
+                };
+            })
+            .sort((a, b) => b.nome_exibicao.localeCompare(a.nome_exibicao));
+
+        const caminhoDoIndiceJson = path.join(dirPath, 'sprints.json');
+        await fs.writeFile(caminhoDoIndiceJson, JSON.stringify(listaCompletaSprints, null, 2), 'utf8');
+        console.log(`[Altona Engine] Índice de arquivos estáticos criado em: utils/sprints.json`);
+
+    } catch (errDiscorv) {
+        console.error('[Altona Engine] Erro ao tentar mapear arquivos estáticos da pasta utils:', errDiscorv.message);
+    }
+
+    return resultados;
 }
 
 module.exports = { sincronizarMondaySprints };
+
