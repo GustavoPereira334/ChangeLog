@@ -4,58 +4,9 @@ google.charts.load('current', { 'packages': ['corechart'] });
 // Carrega o menu inicial ao inicializar o arquivo
 carregarMenuBanco();
 
-//LISTENERS DOS BOTÕES DE SINCRONIZAÇÃO
-document.getElementById('btnSyncMovidesk').addEventListener('click', async function () {
-    const btn = this;
-    const original = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = 'Sincronizando Movidesk...';
-    btn.style.opacity = '0.6';
-
-    try {
-        const response = await fetch('http://localhost:3000/api/sincronizar-movidesk?sprint=Geral');
-        const data = await response.json();
-        if (data.success) {
-            alert('Movidesk sincronizado com sucesso!');
-            carregarMenuBanco();
-        } else {
-            alert('Erro: ' + (data.erro || 'Erro desconhecido'));
-        }
-    } catch (err) {
-        alert('Servidor não está rodando.');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = original;
-        btn.style.opacity = '1';
-    }
-});
-
-document.getElementById('btnSyncMonday').addEventListener('click', async function () {
-    const btn = this;
-    const original = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = 'Sincronizando Monday...';
-    btn.style.opacity = '0.6';
-
-    try {
-        const response = await fetch('http://localhost:3000/api/sincronizar-monday-sprints');
-        const data = await response.json();
-        if (data.success) {
-            alert('Monday sincronizado. Arquivos gerados: ' + (data.files || []).join(', '));
-            carregarMenuBanco();
-        } else {
-            alert('Erro: ' + (data.erro || 'Erro desconhecido'));
-        }
-    } catch (err) {
-        alert('Servidor não está rodando.');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = original;
-        btn.style.opacity = '1';
-    }
-});
-
-//  SELETOR DE SPRINT E CARREGAMENTO EXCEL
+// ============================================================
+// SELETOR DE SPRINT E CARREGAMENTO EXCEL
+// ============================================================
 document.getElementById('selectSprint').addEventListener('change', function () {
     const urlArquivo = this.value;
     if (!urlArquivo) return;
@@ -75,7 +26,9 @@ document.getElementById('selectSprint').addEventListener('change', function () {
         });
 });
 
-//  PROCESSAMENTO DOS DADOS DO EXCEL
+// ============================================================
+// PROCESSAMENTO DOS DADOS DO EXCEL
+// ============================================================
 function processarDados(workbook) {
     try {
         const abaDash = workbook.Sheets['Dashboard'];
@@ -88,44 +41,38 @@ function processarDados(workbook) {
         }
 
         const vTotal = abaDash['A5'] ? abaDash['A5'].v : 0;
-        const vSLA = abaDash['D5'] ? abaDash['D5'].v : 0;
-        const vTempo = abaDash['G5'] ? abaDash['G5'].v : 0;
         const vAreas = abaDash['J5'] ? abaDash['J5'].v : 0;
         const vPeriodo = abaDash['B2'] ? (abaDash['B2'].w || abaDash['B2'].v) : 'N/A';
 
-        // Calcula atendidos Concluído + Implantado + Encerrado utilizando a aba Resumo
+        // Calcula atendidos: Feito + Implantação + Encerrado via aba Resumo
         const concluido = abaResumo['N10'] ? abaResumo['N10'].v : 0;
         const implantado = abaResumo['N11'] ? abaResumo['N11'].v : 0;
         const encerrado = abaResumo['N12'] ? abaResumo['N12'].v : 0;
         const vAtendidos = concluido + implantado + encerrado;
         const vPercentual = vTotal > 0 ? Math.round((vAtendidos / vTotal) * 100) : 0;
 
-        // Renderiza valores nos blocos de cards superiores
+        // Cards superiores
         document.getElementById('cardTotal').innerText = vTotal;
         document.getElementById('cardAtendidos').innerText = vAtendidos;
         document.getElementById('cardPercentual').innerText = vPercentual + '%';
         document.getElementById('cardAreas').innerText = vAreas;
 
-        // Renderiza valores nas estatísticas do header
+        // Estatísticas do header
         document.getElementById('resumoPeriodo').innerText = vPeriodo;
         document.getElementById('resumoTotal').innerText = vTotal;
         document.getElementById('resumoAreas').innerText = vAreas;
         document.getElementById('resumoAtendidos').innerText = vAtendidos;
 
-        // Renderização da tabela principal de chamados
+        // Tabela principal de tickets
         const jsonData = XLSX.utils.sheet_to_json(abaTickets);
         document.getElementById('output').innerHTML = XLSX.utils.sheet_to_html(XLSX.utils.json_to_sheet(jsonData));
 
-        // Inicializa o preenchimento automático das caixas de seleção de filtros
         atualizaFiltrosTable();
 
-        // Renderização da Tabela de Chamados fora da Sprint
-        const rangeOriginal = abaDash['!ref'];
-        abaDash['!ref'] = 'J9:L20'; // Filtra apenas a região crítica do dashboard do Excel
-        document.getElementById('outputSLA').innerHTML = XLSX.utils.sheet_to_html(abaDash);
-        abaDash['!ref'] = rangeOriginal;
+        // Tabela SLA — tickets encerrados fora do prazo
+        renderizarTabelaSLA(jsonData);
 
-        //renderiza Google Charts
+        // Google Charts
         google.charts.setOnLoadCallback(() => {
             renderizarTodosGraficos(abaResumo, jsonData);
             setTimeout(colorirNomesTabela, 120);
@@ -137,7 +84,9 @@ function processarDados(workbook) {
     }
 }
 
+// ============================================================
 // MOTOR DE COMPOSIÇÃO DOS GRÁFICOS
+// ============================================================
 function renderizarTodosGraficos(abaResumo, jsonData) {
     const resumoJson = XLSX.utils.sheet_to_json(abaResumo, { header: 1 });
 
@@ -146,20 +95,18 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
     let contagemPrio = { 'Crítica': 0, 'Alta': 0, 'Média': 0, 'Baixa': 0 };
     let contagemSLA = { 'Sim': 0, 'Não': 0 };
 
-    // EXTRAÇÃO DE KPI'S MATRICIAIS DA ABA RESUMO
     resumoJson.forEach((row, i) => {
         if (i < 9) return;
 
-        // Tickets por Área
         if (row && row[0] && row[1] !== undefined) {
             const valor = parseFloat(row[1]);
             const texto = String(row[0]).trim();
-            if (!isNaN(valor) && !texto.toUpperCase().includes('TICKETS') && !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('SEMANA')) {
+            if (!isNaN(valor) && !texto.toUpperCase().includes('TICKETS') &&
+                !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('SEMANA')) {
                 contagemArea[texto] = valor;
             }
         }
 
-        // Distribuição por Tipo 
         if (row && row[3] && row[4] !== undefined) {
             const valor = parseFloat(row[4]);
             const texto = String(row[3]).trim();
@@ -168,7 +115,6 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
             }
         }
 
-        // Tickets por Prioridade 
         if (row && row[6] && row[7] !== undefined) {
             const valor = parseFloat(row[7]);
             const texto = String(row[6]).trim();
@@ -178,7 +124,6 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
             }
         }
 
-        //Cumprimento de SLA (Colunas J e K)
         if (row && row[9] && row[10] !== undefined) {
             const valor = parseFloat(row[10]);
             const texto = String(row[9]).trim();
@@ -192,30 +137,22 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
     let semanas = { 'Semana 1': 0, 'Semana 2': 0, 'Semana 3': 0, 'Semana 4': 0, 'Semana 5': 0 };
 
     jsonData.forEach(ticket => {
-        // Captura o status e a string da semana diretamente da aba Tickets do Excel
         const statusTicket = ticket['Status'] ? String(ticket['Status']).trim().toUpperCase() : '';
-
-        // Mapeia os possíveis nomes que a coluna 'Semana' pode assumir na leitura do JSON
         const semanaCrua = ticket['Semana'] || ticket['semana'] || ticket['SEMANA'] || '';
         let nomeSemana = String(semanaCrua).trim();
 
-        // Fallback Inteligente: Se o Excel trouxe apenas o número isolado (ex: 1, 2, 3) ao invés do texto completo
         if (nomeSemana === '1') nomeSemana = 'Semana 1';
         if (nomeSemana === '2') nomeSemana = 'Semana 2';
         if (nomeSemana === '3') nomeSemana = 'Semana 3';
         if (nomeSemana === '4') nomeSemana = 'Semana 4';
         if (nomeSemana === '5') nomeSemana = 'Semana 5';
 
-        // Incrementa apenas se pertencer ao escopo de chamados finalizados
         if (['CONCLUÍDO', 'IMPLANTADO', 'ENCERRADO', 'FEITO', 'DONE'].includes(statusTicket)) {
-            if (semanas[nomeSemana] !== undefined) {
-                semanas[nomeSemana]++;
-            }
+            if (semanas[nomeSemana] !== undefined) semanas[nomeSemana]++;
         }
     });
 
-
-    // Grafico Tickets por Área
+    // Gráfico: Tickets por Área
     const dataSetor = new google.visualization.DataTable();
     dataSetor.addColumn('string', 'Área');
     dataSetor.addColumn('number', 'Quantidade');
@@ -230,7 +167,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         vAxis: { format: '0', viewWindow: { min: 0 } }
     });
 
-    // GRÁFICO Distribuição por Tipo
+    // Gráfico: Distribuição por Tipo
     const dataTipo = new google.visualization.DataTable();
     dataTipo.addColumn('string', 'Tipo');
     dataTipo.addColumn('number', 'Qtd');
@@ -244,7 +181,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         legend: { position: 'right' }
     });
 
-    // GRÁFICO  Tickets por Prioridade
+    // Gráfico: Tickets por Prioridade
     const dataPrio = new google.visualization.DataTable();
     dataPrio.addColumn('string', 'Prioridade');
     dataPrio.addColumn('number', 'Qtd');
@@ -260,7 +197,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         vAxis: { minValue: 0, format: '0' }
     });
 
-    // GRÁFICO Cumprimento de SLA
+    // Gráfico: Cumprimento de SLA
     const dataSLA = google.visualization.arrayToDataTable([
         ['SLA', 'Valor'],
         ['Sim', contagemSLA['Sim'] || 0],
@@ -274,12 +211,10 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         legend: { position: 'right' }
     });
 
-    // GRÁFICO Tickets por Semana
+    // Gráfico: Tickets Finalizados por Semana
     const dataBurn = new google.visualization.DataTable();
     dataBurn.addColumn('string', 'Semana');
     dataBurn.addColumn('number', 'Quantidade');
-
-
     ['Semana 1', 'Semana 2', 'Semana 3', 'Semana 4', 'Semana 5'].forEach(sem => {
         dataBurn.addRow([sem, semanas[sem]]);
     });
@@ -294,7 +229,9 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
     });
 }
 
-// Altera cores e fundo de certas "Escritas" nas tabelas
+// ============================================================
+// COLORIZAÇÃO DA TABELA
+// ============================================================
 function colorirNomesTabela() {
     const container = document.getElementById('output');
     if (!container) return;
@@ -308,7 +245,7 @@ function colorirNomesTabela() {
         'AUTOMAÇÃO': { color: '#fd7e14', bg: '#fff3e0' },
         'BUG': { color: 'blue', bg: '#e8eaf6' },
         'MELHORIA': { color: '#ffd000', bg: '#ffffeb' },
-        'Correção': { color: 'green', bg: '#e8f5e9' },
+        'CORREÇÃO': { color: 'green', bg: '#e8f5e9' },
         'PROJETO': { color: '#00b7ff', bg: '#e6e4fc' },
         'NÃO RETORNADO': { color: '#6c757d', bg: '#f8f9fa' },
         'FEITO': { color: '#28a745', bg: '#e8f5e9' },
@@ -322,8 +259,7 @@ function colorirNomesTabela() {
         'HOMOLOGAÇÃO': { color: '#9c27b0', bg: '#f3e5f5' },
         'NOVO RECURSO': { color: '#964B00', bg: '#F5EBE0' },
         'NOVO SISTEMA': { color: '#964B00', bg: '#F5EBE0' },
-        'CORREÇÃO': { color: '#800020', bg: '#F3E1EC' },
-        'ANÁLISE': { color: 'White', bg: '#1C1C1C' },
+        'ANÁLISE': { color: 'white', bg: '#1C1C1C' },
     };
 
     container.querySelectorAll('td').forEach(cell => {
@@ -335,7 +271,60 @@ function colorirNomesTabela() {
     });
 }
 
-// 6.  FILTROS DA TABELA
+// ============================================================
+// TABELA SLA — tickets encerrados fora do prazo
+// ============================================================
+function renderizarTabelaSLA(jsonData) {
+    const container = document.getElementById('outputSLA');
+    const SLA_DIAS = 15;
+    const statusEncerrado = ['FEITO', 'IMPLANTADO', 'IMPLANTAÇÃO', 'ENCERRADO', 'CONCLUÍDO'];
+
+    const foraDoSLA = jsonData.filter(ticket => {
+        const status = String(ticket['Status'] || '').trim().toUpperCase();
+        if (!statusEncerrado.includes(status)) return false;
+
+        const abertura = ticket['Abertura'] ? new Date(ticket['Abertura'].split('/').reverse().join('-')) : null;
+        const encerramento = ticket['Encerramento'] ? new Date(ticket['Encerramento'].split('/').reverse().join('-')) : null;
+
+        if (!abertura || !encerramento || isNaN(abertura) || isNaN(encerramento)) return false;
+
+        const dias = Math.ceil((encerramento - abertura) / (1000 * 60 * 60 * 24));
+        return dias > SLA_DIAS;
+    });
+
+    if (foraDoSLA.length === 0) {
+        container.innerHTML = '<p style="color:#28a745;font-size:0.85rem;padding:10px 0;">Nenhum item encerrado fora do prazo.</p>';
+        return;
+    }
+
+    const linhas = foraDoSLA.map(ticket => {
+        const id = ticket['Ticket'] || ticket['ticket'] || '—';
+        const titulo = ticket['Título'] || ticket['titulo'] || '—';
+        const area = ticket['Área'] || ticket['area'] || '—';
+        return `
+            <tr>
+                <td>${id}</td>
+                <td>${titulo}</td>
+                <td>${area}</td>
+            </tr>`;
+    }).join('');
+
+    container.innerHTML = `
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Título</th>
+                    <th>Área</th>
+                </tr>
+            </thead>
+            <tbody>${linhas}</tbody>
+        </table>`;
+}
+
+// ============================================================
+// FILTROS DA TABELA
+// ============================================================
 function filtrarTabela() {
     const busca = document.getElementById('busca').value.toUpperCase();
     const areaSelecionada = document.getElementById('areaBox').value.toUpperCase();
@@ -383,17 +372,18 @@ function atualizaFiltrosTable() {
     });
 }
 
-// Vincula ouvintes de digitação e alteração aos elementos de filtro
 document.getElementById('busca').addEventListener('input', filtrarTabela);
 document.getElementById('areaBox').addEventListener('change', filtrarTabela);
 document.getElementById('tipoBox').addEventListener('change', filtrarTabela);
 
-// 7. CARREGAMENTO DO SERVIDOR
-
+// ============================================================
+// CARREGAMENTO DO MENU DE SPRINTS
+// ============================================================
 function carregarMenuBanco() {
     const select = document.getElementById('selectSprint');
     if (!select) return;
-    fetch('http://localhost:3000/api/sprints-da-pasta')
+
+    fetch(`${CONFIG.SERVER_BASE_URL}/api/sprints-da-pasta`)
         .then(res => {
             if (!res.ok) throw new Error('Servidor offline');
             return res.json();
@@ -402,15 +392,15 @@ function carregarMenuBanco() {
             if (!listaSprints || listaSprints.length === 0) throw new Error('Pasta vazia');
             popularSelectComMapeamento(listaSprints, true);
         })
-        .catch(err => {
+        .catch(() => {
             console.warn('Servidor local offline. Carregando índice estático da pasta utils...');
             fetch('./utils/sprints.json')
                 .then(resOffline => {
                     if (!resOffline.ok) throw new Error('Índice sprints.json não localizado');
                     return resOffline.json();
                 })
-                .then(listaEstática => {
-                    popularSelectComMapeamento(listaEstática, false);
+                .then(listaEstatica => {
+                    popularSelectComMapeamento(listaEstatica, false);
                 })
                 .catch(errOffline => {
                     console.error('Falha ao ler índice estático:', errOffline);
@@ -425,17 +415,13 @@ function popularSelectComMapeamento(lista, servidorOnline) {
 
     lista.forEach(sprint => {
         const opt = document.createElement('option');
-        if (servidorOnline) {
-            opt.value = sprint.caminho_arquivo.startsWith('http') ? sprint.caminho_arquivo : `http://localhost:3000/${sprint.caminho_arquivo}`;
-        } else {
-            opt.value = `./${sprint.caminho_arquivo}`;
-        }
-
+        opt.value = servidorOnline
+            ? `${CONFIG.SERVER_BASE_URL}/${sprint.caminho_arquivo}`
+            : `./${sprint.caminho_arquivo}`;
         opt.textContent = sprint.nome_exibicao;
         select.appendChild(opt);
     });
 
-    // Dispara automaticamente a leitura do primeiro Excel da lista
     if (lista.length > 0) {
         select.selectedIndex = 1;
         select.dispatchEvent(new Event('change'));

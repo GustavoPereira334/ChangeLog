@@ -6,32 +6,20 @@ const path = require('path');
 const chokidar = require('chokidar');
 const dotenv = require('dotenv');
 
-const envPath = path.join(__dirname, '.env');
-console.log("Tentando carregar .env em:", envPath);
-
+const envPath = path.join(__dirname, '..', '.env');
 const resultDotEnv = dotenv.config({ path: envPath });
 
 if (resultDotEnv.error) {
     console.error("Erro ao carregar .env:", resultDotEnv.error);
 } else {
     console.log("Variáveis carregadas com sucesso.");
-    console.log("MOVIDESK_TOKEN existe:", !!process.env.MOVIDESK_TOKEN);
-    console.log("MONDAY_TOKEN existe:", !!process.env.MONDAY_TOKEN);
-    console.log("MONDAY_BOARD_ID:", process.env.MONDAY_BOARD_ID);
-    console.log("MONDAY_TEXT_COLUMN_ID:", process.env.MONDAY_TEXT_COLUMN_ID);
-    console.log("MONDAY_DESCRIPTION_COLUMN_ID:", process.env.MONDAY_DESCRIPTION_COLUMN_ID);
-    console.log("MONDAY_TYPE_COLUMN_ID:", process.env.MONDAY_TYPE_COLUMN_ID);
-    console.log("MONDAY_STATUS_COLUMN_ID:", process.env.MONDAY_STATUS_COLUMN_ID);
-    console.log("MONDAY_PRIORITY_COLUMN_ID:", process.env.MONDAY_PRIORITY_COLUMN_ID);
-    console.log("MONDAY_CREATION_DATE_COLUMN_ID:", process.env.MONDAY_CREATION_DATE_COLUMN_ID);
-    console.log("MONDAY_RESOLUTION_DATE_COLUMN_ID:", process.env.MONDAY_RESOLUTION_DATE_COLUMN_ID);
-    console.log("MOVIDESK_CLIENT_SECTOR_CUSTOM_FIELD_ID:", process.env.MOVIDESK_CLIENT_SECTOR_CUSTOM_FIELD_ID);
 }
 
-const { sincronizarMovidesk } = require('./movidesk');
-const { sincronizarMondaySprints, buscarEstruturaCamposPersonalizadosClientes } = require('./monday');
+const { sincronizarMondaySprints } = require('./monday');
 
-// gambiarra temporária pra ignorar certificado em local/dev
+// ============================================================
+// CONFIGURAÇÃO GERAL
+// ============================================================
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const app = express();
@@ -43,7 +31,7 @@ app.use(express.json());
 app.use('/utils', express.static(dirPath));
 
 if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath);
+    fs.mkdirSync(dirPath, { recursive: true });
     console.log(`Pasta 'utils' criada em: ${dirPath}`);
 }
 
@@ -52,23 +40,144 @@ watcher.on('add', filePath => {
     console.log(`[${new Date().toLocaleTimeString()}] Novo arquivo detectado: ${path.basename(filePath)}`);
 });
 
-function resolverSetor(pessoa) {
-    const fieldId = String(process.env.MOVIDESK_CLIENT_SECTOR_CUSTOM_FIELD_ID);
-    if (!fieldId) return "Sem setor (ID não configurado no .env)";
+// ============================================================
+// MIDDLEWARE DE AUTENTICAÇÃO POR API KEY
+// Protege todas as rotas de sincronização e admin
+// ============================================================
+function autenticarApiKey(req, res, next) {
+    const apiKey = req.headers['x-api-key'];
+    const apiKeyEsperada = process.env.SYNC_API_KEY;
 
-    // Localiza o campo personalizado do setor 
-    const campo = pessoa.customFieldValues?.find(c => String(c.customFieldId) === fieldId);
-    if (!campo) return "Sem setor";
-
-    //captura o setor no movidesk (campo personalizado)
-    if (campo.value !== null && campo.value !== undefined && String(campo.value).trim() !== '') {
-        return String(campo.value).trim();
+    if (!apiKeyEsperada) {
+        console.error('[Auth] SYNC_API_KEY não configurada no .env');
+        return res.status(500).json({ success: false, erro: 'API Key não configurada no servidor.' });
     }
 
-    return "Sem setor (Texto em branco)";
+    if (!apiKey || apiKey !== apiKeyEsperada) {
+        console.warn(`[Auth] Tentativa de acesso não autorizado em: ${req.path}`);
+        return res.status(401).json({ success: false, erro: 'Não autorizado. API Key inválida ou ausente.' });
+    }
+
+    next();
 }
 
-app.get('/api/campos-clientes', async (req, res) => {
+// ============================================================
+// HELPER INTERNO DE SINCRONIZAÇÃO
+// Centraliza a lógica usada pelo cron e pela rota manual
+// ============================================================
+async function executarSincronizacaoCompleta() {
+    const movideskToken = process.env.MOVIDESK_TOKEN;
+    const mondayToken = process.env.MONDAY_TOKEN;
+
+    if (!movideskToken) throw new Error("MOVIDESK_TOKEN não configurado no .env");
+    if (!mondayToken) throw new Error("MONDAY_TOKEN não configurado no .env");
+
+    const mondayTextColId = process.env.MONDAY_TEXT_COLUMN_ID;
+    const mondayStatusColId = process.env.MONDAY_STATUS_COLUMN_ID;
+    const mondayPriorityColId = process.env.MONDAY_PRIORITY_COLUMN_ID;
+    const mondayDescriptionColId = process.env.MONDAY_DESCRIPTION_COLUMN_ID;
+    const mondayTypeColId = process.env.MONDAY_TYPE_COLUMN_ID;
+    const mondayCreationDateColId = process.env.MONDAY_CREATION_DATE_COLUMN_ID;
+    const mondayResolutionDateColId = process.env.MONDAY_RESOLUTION_DATE_COLUMN_ID;
+    const movideskClientSectorId = process.env.MOVIDESK_CLIENT_SECTOR_CUSTOM_FIELD_ID;
+
+    if (!mondayTextColId || !mondayStatusColId || !mondayPriorityColId ||
+        !mondayDescriptionColId || !mondayTypeColId) {
+        throw new Error("Um ou mais IDs de coluna do Monday.com não estão configurados no .env");
+    }
+
+    console.log(`[Sync] Iniciando sincronização completa em ${new Date().toLocaleString()}...`);
+
+    const result = await sincronizarMondaySprints(
+        mondayToken,
+        process.env.MONDAY_BOARD_ID,
+        mondayTextColId,
+        mondayStatusColId,
+        mondayPriorityColId,
+        mondayDescriptionColId,
+        mondayTypeColId,
+        mondayCreationDateColId,
+        mondayResolutionDateColId,
+        movideskClientSectorId,
+        dirPath
+    );
+
+    console.log('[Sync] Monday concluído. Arquivos:', result.map(r => r.nome_exibicao).join(', '));
+    return result;
+}
+
+// ============================================================
+// CRON JOB — SINCRONIZAÇÃO AUTOMÁTICA A CADA 15 DIAS
+// ============================================================
+const QUINZE_DIAS_MS = 15 * 24 * 60 * 60 * 1000;
+
+function agendarProximaSincronizacao() {
+    console.log(`[Cron] Próxima sincronização agendada em 15 dias (${new Date(Date.now() + QUINZE_DIAS_MS).toLocaleString()}).`);
+
+    setTimeout(async () => {
+        console.log('[Cron] Disparando sincronização automática...');
+        try {
+            await executarSincronizacaoCompleta();
+            console.log('[Cron] Sincronização automática concluída com sucesso.');
+        } catch (err) {
+            console.error('[Cron] Erro na sincronização automática:', err.message);
+        } finally {
+            agendarProximaSincronizacao(); // reagenda para o próximo ciclo
+        }
+    }, QUINZE_DIAS_MS);
+}
+
+// ============================================================
+// ROTAS PÚBLICAS (sem autenticação)
+// ============================================================
+
+// Lista os arquivos Excel gerados na pasta utils
+app.get('/api/sprints-da-pasta', async (req, res) => {
+    try {
+        const files = await fsPromises.readdir(dirPath);
+
+        const lista = files
+            .filter(f => f.endsWith('.xlsx'))
+            .map(f => {
+                let nomeExibicao = f.replace('.xlsx', '').toUpperCase().replace(/_/g, ' ');
+                if (nomeExibicao.startsWith('TICKETS SPRINT ')) {
+                    nomeExibicao = `MOVIDESK - ${nomeExibicao.replace('TICKETS SPRINT ', '')}`;
+                } else if (nomeExibicao.startsWith('MONDAY SPRINT ')) {
+                    nomeExibicao = `MONDAY - ${nomeExibicao.replace('MONDAY SPRINT ', '')}`;
+                }
+                return { nome_exibicao: nomeExibicao, caminho_arquivo: `utils/${f}` };
+            })
+            .sort((a, b) => b.nome_exibicao.localeCompare(a.nome_exibicao));
+
+        res.json(lista);
+    } catch (err) {
+        res.status(500).json({ erro: "Erro ao ler pasta de arquivos históricos." });
+    }
+});
+
+// ============================================================
+// ROTAS PROTEGIDAS (exigem x-api-key no header)
+// ============================================================
+
+// Sincronização manual completa (dev only)
+app.get('/api/sincronizar-tudo', autenticarApiKey, async (req, res) => {
+    try {
+        const result = await executarSincronizacaoCompleta();
+        res.status(200).json({
+            success: true,
+            message: 'Sincronização completa realizada com sucesso!',
+            files: result.map(r => r.nome_exibicao),
+            data: result
+        });
+    } catch (error) {
+        console.error('[Sync] Erro:', error.message);
+        res.status(500).json({ success: false, erro: error.message });
+    }
+});
+
+// Utilitário: lista campos personalizados de clientes no Movidesk
+// Útil para identificar o ID correto do campo Setor
+app.get('/api/campos-clientes', autenticarApiKey, async (req, res) => {
     try {
         const TOKEN = process.env.MOVIDESK_TOKEN;
         if (!TOKEN) throw new Error("MOVIDESK_TOKEN não configurado no .env");
@@ -77,7 +186,7 @@ app.get('/api/campos-clientes', async (req, res) => {
         const https = require('https');
         const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-        console.log(`[${new Date().toLocaleTimeString()}] Buscando campos personalizados direto das pessoas...`);
+        console.log(`[${new Date().toLocaleTimeString()}] Buscando campos personalizados de pessoas...`);
 
         const camposEncontrados = {};
         let totalAnalisadas = 0;
@@ -90,7 +199,8 @@ app.get('/api/campos-clientes', async (req, res) => {
             try {
                 resp = await axios.get('https://api.movidesk.com/public/v1/persons', {
                     params: { token: TOKEN, '$expand': 'customFieldValues', '$top': take, '$skip': skip },
-                    httpsAgent, timeout: 30000,
+                    httpsAgent,
+                    timeout: 30000,
                 });
             } catch (e) {
                 console.warn(`[campos-clientes] Erro skip=${skip}: ${e.message}`);
@@ -109,13 +219,6 @@ app.get('/api/campos-clientes', async (req, res) => {
 
                 for (const campo of campos) {
                     const id = String(campo.customFieldId || '?');
-
-                    if (id === '243059') {
-                        console.log('\n========== CAMPO SETOR ==========');
-                        console.log('Pessoa:', pessoa.businessName || pessoa.personName);
-                        console.log(JSON.stringify(campo, null, 2));
-                        console.log('=================================\n');
-                    }
 
                     if (!camposEncontrados[id]) {
                         camposEncontrados[id] = {
@@ -161,264 +264,10 @@ app.get('/api/campos-clientes', async (req, res) => {
     }
 });
 
-app.get('/api/sincronizar-movidesk', async (req, res) => {
-    try {
-        const TOKEN = process.env.MOVIDESK_TOKEN;
-        if (!TOKEN) throw new Error("MOVIDESK_TOKEN não configurado no .env");
-
-        const sprintDesejada = req.query.sprint || 'Geral';
-        console.log(`[${new Date().toLocaleTimeString()}] Iniciando Movidesk: ${sprintDesejada}...`);
-
-        const result = await sincronizarMovidesk(sprintDesejada, TOKEN, dirPath);
-        res.status(200).json(result);
-    } catch (error) {
-        console.error(`[${new Date().toLocaleTimeString()}] Erro Movidesk:`, error.message);
-        res.status(500).json({ success: false, erro: error.message });
-    }
-});
-
-app.get('/api/testar-pessoa', async (req, res) => {
-    try {
-        const TOKEN = process.env.MOVIDESK_TOKEN;
-        const axios = require('axios');
-        const https = require('https');
-        const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-        let rules = [];
-        try {
-            const rulesResp = await axios.get('https://api.movidesk.com/public/v1/customFieldRules', { params: { token: TOKEN }, httpsAgent });
-            rules = rulesResp.data || [];
-        } catch (ruleError) {
-            console.warn(`⚠️ [Aviso] Falha ao carregar customFieldRules (${ruleError.message}). Continuando sem regras.`);
-        }
-
-        const resp = await axios.get('https://api.movidesk.com/public/v1/persons', {
-            params: { token: TOKEN, '$expand': 'customFieldValues', '$top': 1000 },
-            httpsAgent
-        });
-
-        const pessoas = resp.data.value || (Array.isArray(resp.data) ? resp.data : []);
-        const termo = (req.query.nome || '').toLowerCase();
-
-        const encontrados = pessoas.filter(p => {
-            const nome = (p.personName || p.businessName || p.profileName || p.email || '').toLowerCase();
-            return nome.includes(termo);
-        });
-
-        res.json({
-            total: encontrados.length,
-            pessoas: encontrados.map(p => ({
-                id: p.id,
-                nome: p.personName,
-                empresa: p.businessName,
-                email: p.email,
-                setor_resolvido: resolverSetor(p, rules),
-                customFields: p.customFieldValues
-            }))
-        });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, erro: err.message });
-    }
-});
-
-// rota pra testar o caso específico do Alan (fix do combobox line)
-app.get('/api/testar-alan', async (req, res) => {
-    try {
-        const TOKEN = process.env.MOVIDESK_TOKEN;
-        const axios = require('axios');
-        const https = require('https');
-        const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-        let rules = [];
-        try {
-            // A rota correta na API do Movidesk para ler os itens de listas/combobox
-            console.log(`[Movidesk] Baixando dicionário de opções de listas...`);
-            const rulesResp = await axios.get('https://api.movidesk.com/public/v1/customFieldRules', {
-                params: { token: TOKEN },
-                httpsAgent
-            });
-
-            // Armazena e garante que a array de opções venha estruturada por ID de regra
-            rules = rulesResp.data || [];
-        } catch (ruleError) {
-            console.warn(`⚠️ [Aviso] Falha ao carregar customFieldRules (${ruleError.message}). Usando fallback.`);
-        }
-
-        const resp = await axios.get('https://api.movidesk.com/public/v1/persons', {
-            params: { token: TOKEN, '$expand': 'customFieldValues', '$top': 1000 },
-            httpsAgent
-        });
-
-        const pessoas = resp.data.value || (Array.isArray(resp.data) ? resp.data : []);
-        const alan = pessoas.find(p => (p.businessName || p.personName || '').toLowerCase().includes('alan jonis da silva'));
-
-        if (!alan) {
-            return res.json({ success: false, message: 'Alan não encontrado' });
-        }
-
-        // Passa os dados brutos e o catálogo de regras baixado para descriptografar o índice 'line'
-        const setorDefinido = resolverSetor(alan, rules);
-
-        const respostaFinal = {
-            ...alan,
-            setor_resolvido: setorDefinido
-        };
-
-        console.log('\n========== DEBUG ALAN RE-ALINHADO (COMBOBOX) ==========');
-        console.log(JSON.stringify(respostaFinal, null, 2));
-        console.log('========================================================\n');
-
-        res.json(respostaFinal);
-
-    } catch (err) {
-        res.status(500).json({ erro: err.message });
-    }
-});
-
-app.get('/api/debug-combobox', async (req, res) => {
-    try {
-        const axios = require('axios');
-        const https = require('https');
-
-        const resp = await axios.get('https://api.movidesk.com/public/v1/customFieldRules', {
-            params: { token: process.env.MOVIDESK_TOKEN },
-            httpsAgent: new https.Agent({ rejectUnauthorized: false })
-        });
-
-        res.json(resp.data);
-    } catch (err) {
-        res.status(500).json({ erro: err.message, response: err.response?.data });
-    }
-});
-
-app.get('/api/sincronizar-monday-sprints', async (req, res) => {
-    try {
-        const mondayToken = process.env.MONDAY_TOKEN;
-        if (!mondayToken) throw new Error("MONDAY_TOKEN não configurado no .env");
-
-        const mondayTextColId = process.env.MONDAY_TEXT_COLUMN_ID;
-        const mondayStatusColId = process.env.MONDAY_STATUS_COLUMN_ID;
-        const mondayPriorityColId = process.env.MONDAY_PRIORITY_COLUMN_ID;
-        const mondayDescriptionColId = process.env.MONDAY_DESCRIPTION_COLUMN_ID;
-        const mondayTypeColId = process.env.MONDAY_TYPE_COLUMN_ID;
-        const mondayCreationDateColId = process.env.MONDAY_CREATION_DATE_COLUMN_ID;
-        const mondayResolutionDateColId = process.env.MONDAY_RESOLUTION_DATE_COLUMN_ID;
-        const movideskClientSectorId = process.env.MOVIDESK_CLIENT_SECTOR_CUSTOM_FIELD_ID;
-
-        if (!mondayTextColId || !mondayStatusColId || !mondayPriorityColId ||
-            !mondayDescriptionColId || !mondayTypeColId ||
-            !mondayCreationDateColId || !mondayResolutionDateColId) {
-            throw new Error("Um ou mais IDs de coluna do Monday.com não estão configurados no .env");
-        }
-
-        console.log(`[${new Date().toLocaleTimeString()}] Iniciando sincronização Monday.com...`);
-
-        const result = await sincronizarMondaySprints(
-            mondayToken,
-            process.env.MONDAY_BOARD_ID,
-            mondayTextColId,
-            mondayStatusColId,
-            mondayPriorityColId,
-            mondayDescriptionColId,
-            mondayTypeColId,
-            mondayCreationDateColId,
-            mondayResolutionDateColId,
-            movideskClientSectorId,
-            dirPath
-        );
-
-        res.status(200).json({
-            success: true,
-            message: "Monday sincronizado. Arquivos gerados: " + result.map(r => r.nome_exibicao).join(', '),
-            files: result
-        });
-    } catch (error) {
-        console.error(`[${new Date().toLocaleTimeString()}] Erro Monday:`, error.message);
-        res.status(500).json({ success: false, erro: error.message });
-    }
-});
-
-// lê os xlsx que já foram gerados na pasta utils
-app.get('/api/sprints-da-pasta', async (req, res) => {
-    try {
-        const files = await fsPromises.readdir(dirPath);
-
-        const lista = files
-            .filter(f => f.endsWith('.xlsx'))
-            .map(f => {
-                let nomeExibicao = f.replace('.xlsx', '').toUpperCase().replace(/_/g, ' ');
-                if (nomeExibicao.startsWith('TICKETS SPRINT ')) {
-                    nomeExibicao = `MOVIDESK - ${nomeExibicao.replace('TICKETS SPRINT ', '')}`;
-                } else if (nomeExibicao.startsWith('MONDAY SPRINT ')) {
-                    nomeExibicao = `MONDAY - ${nomeExibicao.replace('MONDAY SPRINT ', '')}`;
-                }
-                return { nome_exibicao: nomeExibicao, caminho_arquivo: `utils/${f}` };
-            })
-            .sort((a, b) => b.nome_exibicao.localeCompare(a.nome_exibicao));
-
-        res.json(lista);
-    } catch (err) {
-        res.status(500).json({ erro: "Erro ao ler pasta de arquivos históricos." });
-    }
-});
-
-app.get('/api/sincronizar-tudo', async (req, res) => {
-    try {
-        const movideskToken = process.env.MOVIDESK_TOKEN;
-        const mondayToken = process.env.MONDAY_TOKEN;
-
-        if (!movideskToken) throw new Error("MOVIDESK_TOKEN não configurado no .env");
-        if (!mondayToken) throw new Error("MONDAY_TOKEN não configurado no .env");
-
-        const mondayTextColId = process.env.MONDAY_TEXT_COLUMN_ID;
-        const mondayStatusColId = process.env.MONDAY_STATUS_COLUMN_ID;
-        const mondayPriorityColId = process.env.MONDAY_PRIORITY_COLUMN_ID;
-        const mondayDescriptionColId = process.env.MONDAY_DESCRIPTION_COLUMN_ID;
-        const mondayTypeColId = process.env.MONDAY_TYPE_COLUMN_ID;
-        const mondayCreationDateColId = process.env.MONDAY_CREATION_DATE_COLUMN_ID;
-        const mondayResolutionDateColId = process.env.MONDAY_RESOLUTION_DATE_COLUMN_ID;
-        const movideskClientSectorId = process.env.MOVIDESK_CLIENT_SECTOR_CUSTOM_FIELD_ID;
-
-        if (!mondayTextColId || !mondayStatusColId || !mondayPriorityColId ||
-            !mondayDescriptionColId || !mondayTypeColId ||
-            !mondayCreationDateColId || !mondayResolutionDateColId) {
-            throw new Error("Um ou mais IDs de coluna do Monday.com não estão configurados no .env");
-        }
-
-        const sprintDesejada = req.query.sprint || 'Geral';
-
-        console.log("Iniciando sincronização completa...");
-        await sincronizarMovidesk(sprintDesejada, movideskToken, dirPath);
-        console.log("Movidesk sincronizado com sucesso.");
-
-        const result = await sincronizarMondaySprints(
-            mondayToken,
-            process.env.MONDAY_BOARD_ID,
-            mondayTextColId,
-            mondayStatusColId,
-            mondayPriorityColId,
-            mondayDescriptionColId,
-            mondayTypeColId,
-            mondayCreationDateColId,
-            mondayResolutionDateColId,
-            movideskClientSectorId,
-            dirPath
-        );
-
-        res.status(200).json({
-            success: true,
-            message: "Sincronização completa realizada com sucesso!",
-            files: result.map(r => r.nome_exibicao),
-            data: result
-        });
-    } catch (error) {
-        console.error("Erro na sincronização completa:", error.message);
-        res.status(500).json({ success: false, erro: error.message });
-    }
-});
-
+// ============================================================
+// INICIALIZAÇÃO DO SERVIDOR
+// ============================================================
 app.listen(PORT, () => {
     console.log(`Servidor rodando em http://localhost:${PORT}`);
+    agendarProximaSincronizacao();
 });

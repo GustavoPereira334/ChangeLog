@@ -4,9 +4,6 @@ const path = require('path');
 const https = require('https');
 const fs = require('fs').promises;
 
-// ==========================================
-// 1. CONFIGURAÇÕES E MAPAS DE DE-PARA
-// ==========================================
 const mondayStatusMap = {
   "Concluído": "Concluído", "Done": "Concluído", "Feito": "Concluído",
   "Implantado": "Implantado", "Implantação": "Implantação",
@@ -32,13 +29,14 @@ const urgencyMap = {
   53860: "Muito Alta"
 };
 
-// CUIDADO: Desabilita a verificação de certificado TLS.
-// Use APENAS em desenvolvimento, nunca em produção.
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// ==========================================
-// 2. FUNÇÕES AUXILIARES DE DATA
-// ==========================================
+// SLA baseado no ciclo da sprint
+const SLA_DIAS = 15;
+
+// Status que indicam ticket encerrado
+const STATUS_ENCERRADO = ['Feito', 'Implantação', 'Concluído', 'Encerrado'];
+
 function calcularSemana(dateObj) {
   if (!dateObj || isNaN(dateObj.getTime())) return 'Semana 1';
   const dia = dateObj.getDate();
@@ -58,9 +56,39 @@ function nomeMes(dateObj) {
   return meses[dateObj.getMonth()];
 }
 
-// ==========================================
-// 3.1. EXTRAÇÃO DE VALORES DE CAMPOS PERSONALIZADOS DE PESSOAS (CLIENTES)
-// ==========================================
+// ============================================================
+// CÁLCULO DE SLA
+// - dataEntradaSprint: created_at do item no Monday
+//   (data real em que o scrum master colocou o ticket na sprint)
+// - dataEncerramentoObj: data de resolução
+// - statusFinal: status atual do ticket
+//
+// Regras:
+//   Ticket ainda aberto           → 'Aberto'  (não entra no gráfico)
+//   Encerrado em até 15 dias      → 'Sim'
+//   Encerrado depois de 15 dias   → 'Não'
+// ============================================================
+function calcularSLA(dataEntradaSprint, dataEncerramentoObj, statusFinal) {
+  const encerrado = STATUS_ENCERRADO.includes(statusFinal);
+
+  // Ticket ainda aberto — não conta no gráfico
+  if (!encerrado) {
+    return { dentroSLA: 'Aberto', atraso: 0 };
+  }
+
+  // Encerrado mas sem datas válidas — considera fora do SLA
+  if (!dataEntradaSprint || !dataEncerramentoObj ||
+      isNaN(dataEntradaSprint.getTime()) || isNaN(dataEncerramentoObj.getTime())) {
+    return { dentroSLA: 'Não', atraso: 0 };
+  }
+
+  const dias = Math.ceil((dataEncerramentoObj - dataEntradaSprint) / (1000 * 60 * 60 * 24));
+  const dentroSLA = dias <= SLA_DIAS ? 'Sim' : 'Não';
+  const atraso = dias > SLA_DIAS ? dias - SLA_DIAS : 0;
+
+  return { dentroSLA, atraso };
+}
+
 async function buscarValoresCamposPersonalizadosPessoas(token) {
   const mapaValoresCamposPessoas = {};
   let skip = 0;
@@ -96,7 +124,6 @@ async function buscarValoresCamposPersonalizadosPessoas(token) {
         if (retries < maxRetries) {
           await new Promise(resolve => setTimeout(resolve, retryDelayMs));
         } else {
-          console.error(`[Movidesk] Interrompendo paginação de valores de pessoas em skip=${skip}.`);
           falhaCritica = true;
         }
       }
@@ -131,10 +158,6 @@ async function buscarValoresCamposPersonalizadosPessoas(token) {
   return mapaValoresCamposPessoas;
 }
 
-// ==========================================
-// 3.2. EXTRAÇÃO DA ESTRUTURA DOS CAMPOS PERSONALIZADOS DE CLIENTES
-//      Exportada para uso na rota /api/campos-clientes do server.js
-// ==========================================
 async function buscarEstruturaCamposPersonalizadosClientes(token) {
   const mapaCamposGlobais = {};
   let skip = 0;
@@ -166,11 +189,9 @@ async function buscarEstruturaCamposPersonalizadosClientes(token) {
           success = true;
         } catch (err) {
           retries++;
-          console.error(`[Movidesk] Erro ao buscar estrutura de campos (tentativa ${retries}/${maxRetries}): ${err.message}`);
           if (retries < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, retryDelayMs));
           } else {
-            console.error(`[Movidesk] Interrompendo paginação em skip=${skip}.`);
             falhaCritica = true;
           }
         }
@@ -183,7 +204,6 @@ async function buscarEstruturaCamposPersonalizadosClientes(token) {
 
       for (const campo of campos) {
         const idCampo = String(campo.id);
-
         if (!mapaCamposGlobais[idCampo]) {
           mapaCamposGlobais[idCampo] = {
             customFieldId: campo.id,
@@ -192,7 +212,6 @@ async function buscarEstruturaCamposPersonalizadosClientes(token) {
             itensDisponiveis: {}
           };
         }
-
         if (campo.items && campo.items.length > 0) {
           for (const item of campo.items) {
             const idItem = String(item.customFieldItemId);
@@ -201,7 +220,6 @@ async function buscarEstruturaCamposPersonalizadosClientes(token) {
         }
       }
 
-      console.log(`[Movidesk] ${campos.length} campos analisados (skip=${skip})...`);
       skip += take;
     }
 
@@ -224,9 +242,6 @@ async function buscarEstruturaCamposPersonalizadosClientes(token) {
   }
 }
 
-// ==========================================
-// 4. BUSCA DE TODOS OS TICKETS DO MOVIDESK
-// ==========================================
 async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, movideskClientSectorCustomFieldId) {
   const mapa = {};
   let skip = 0;
@@ -260,11 +275,9 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
         success = true;
       } catch (err) {
         retries++;
-        console.error(`[Movidesk] Erro skip=${skip} (tentativa ${retries}/${maxRetries}): ${err.message}`);
         if (retries < maxRetries) {
           await new Promise(resolve => setTimeout(resolve, retryDelayMs));
         } else {
-          console.error(`[Movidesk] Todas as tentativas falharam para skip=${skip}. Retornando dados parciais.`);
           falhaCritica = true;
         }
       }
@@ -277,7 +290,6 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
 
     for (const t of lista) {
       const idTicket = t.id || 'N/A';
-      const assunto = t.subject || 'N/A';
       const statusTicket = t.status || 'N/A';
       const equipeBruta = t.ownerTeam || 'N/A';
       const criadorObjeto = t.createdBy || {};
@@ -302,12 +314,8 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
         .trim()
         .substring(0, 300) || 'N/A';
 
-      const solicitante = criadorObjeto.personName ||
-        criadorObjeto.name ||
-        criadorObjeto.businessName ||
-        'N/A';
+      const solicitante = criadorObjeto.personName || criadorObjeto.name || criadorObjeto.businessName || 'N/A';
 
-      // Área vem do campo personalizado "Setor" do cliente no Movidesk
       let setorCliente = 'Setor não informado';
       const createdById = criadorObjeto.id ? String(criadorObjeto.id) : null;
 
@@ -317,8 +325,6 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
           setorCliente = String(camposPessoa[String(movideskClientSectorCustomFieldId)]).trim();
         }
       }
-
-      const area = setorCliente;
 
       mapa[String(idTicket)] = {
         area: setorCliente,
@@ -339,6 +345,8 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
     console.log(`[Movidesk] ${total} tickets processados (skip=${skip})...`);
     skip += take;
 
+    // Para quando a página retornar menos itens que o limite (fim real da paginação)
+    if (lista.length < take) break;
     if (total > 5000) break;
   }
 
@@ -346,9 +354,6 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
   return mapa;
 }
 
-// ==========================================
-// 5. BUSCA DE TODOS OS ITENS DO MONDAY
-// ==========================================
 async function buscarTodosItensMonday(boardId, token) {
   let allItems = [];
   let cursor = null;
@@ -357,6 +362,7 @@ async function buscarTodosItensMonday(boardId, token) {
   console.log(`[Monday] Buscando itens do board ${boardId}...`);
 
   while (hasNextPage) {
+    // created_at adicionado para usar como data de entrada na sprint (base do SLA)
     const query = `
       query {
         boards(ids: ${boardId}) {
@@ -365,6 +371,7 @@ async function buscarTodosItensMonday(boardId, token) {
             items {
               id
               name
+              created_at
               group { title }
               column_values {
                 id
@@ -404,9 +411,6 @@ const getColVal = (item, id) => {
   return c?.text?.trim() || '';
 };
 
-// ==========================================
-// 6. GERAÇÃO DO EXCEL POR SPRINT
-// ==========================================
 async function gerarExcelParaSprint(
   sprintNome, itensDaSprint, mapaMovidesk, dirPath,
   mondayTextColId, mondayStatusColId, mondayPriorityColId,
@@ -419,6 +423,9 @@ async function gerarExcelParaSprint(
   const fonteBranca = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
   const fonteNegrito = { bold: true };
 
+  // totalTicketsDaSprint declarado ANTES de ser usado
+  const totalTicketsDaSprint = itensDaSprint.length;
+
   let dentroSLACount = 0;
   let foraSLACount = 0;
   let totalTempoResolucao = 0;
@@ -427,11 +434,9 @@ async function gerarExcelParaSprint(
   const contagemTipo = {};
   const contagemPrio = {};
   const contagemStatus = {};
-  const contagemSemanaBurnDown = {};
-  const contagemSemanaFinalizadosMovidesk = {};
+  const contagemSemanaFinalizados = {};
   const ticketsForaSLA = [];
 
-  // --- ABA TICKETS ---
   const ticketsSheet = workbook.addWorksheet('Tickets');
   ticketsSheet.columns = [
     { header: 'Ticket', key: 'ticket', width: 10 },
@@ -443,9 +448,10 @@ async function gerarExcelParaSprint(
     { header: 'Prioridade', key: 'prioridade', width: 12 },
     { header: 'Solicitante', key: 'solicitante', width: 25 },
     { header: 'Equipe TI', key: 'equipe', width: 20 },
-    { header: 'Abertura', key: 'abertura', width: 14 },
+    { header: 'Entrada Sprint', key: 'abertura', width: 16 },
     { header: 'Encerramento', key: 'encerramento', width: 14 },
     { header: 'Status', key: 'status', width: 16 },
+    { header: 'SLA (15 dias)', key: 'sla', width: 14 },
     { header: 'Semana', key: 'semana', width: 12 },
     { header: 'Mês', key: 'mes', width: 14 },
   ];
@@ -475,19 +481,21 @@ async function gerarExcelParaSprint(
     const solicitante = mov.solicitante || 'Solicitante não informado';
     const equipe = mov.equipe || 'Equipe não informada';
 
+    // Data de entrada na sprint = created_at do item no Monday
+    // O scrum master cria o item já na sprint correta, então esse campo
+    // representa exatamente quando o ticket entrou nessa sprint
+    let dataEntradaSprint = item.created_at ? new Date(item.created_at) : null;
 
-    // Datas: Movidesk tem prioridade; Monday é fallback
-    let dataAberturaObj = mov.abertura ? new Date(mov.abertura) : null;
-    let dataEncerramentoObj = mov.encerramento ? new Date(mov.encerramento) : null;
-
-    // Fallback para datas do Monday se Movidesk não tiver
-    if (!dataAberturaObj) {
+    // Fallback: coluna de data configurável no Monday, se created_at não vier
+    if (!dataEntradaSprint) {
       const dataMondayCriacao = getColVal(item, mondayCreationDateColId);
       if (dataMondayCriacao && !isNaN(new Date(dataMondayCriacao).getTime())) {
-        dataAberturaObj = new Date(dataMondayCriacao);
+        dataEntradaSprint = new Date(dataMondayCriacao);
       }
     }
 
+    // Data de encerramento: preferência para o Movidesk, fallback para Monday
+    let dataEncerramentoObj = mov.encerramento ? new Date(mov.encerramento) : null;
     if (!dataEncerramentoObj) {
       const dataMondayResolucao = getColVal(item, mondayResolutionDateColId);
       if (dataMondayResolucao && !isNaN(new Date(dataMondayResolucao).getTime())) {
@@ -495,10 +503,9 @@ async function gerarExcelParaSprint(
       }
     }
 
-    const abertura = dataAberturaObj ? dataAberturaObj.toLocaleDateString('pt-BR') : 'N/A';
-    const encerramento = dataEncerramentoObj ? dataEncerramentoObj.toLocaleDateString('pt-BR') : 'N/A';
+    const aberturaFormatada = dataEntradaSprint ? dataEntradaSprint.toLocaleDateString('pt-BR') : 'N/A';
+    const encerramentoFormatado = dataEncerramentoObj ? dataEncerramentoObj.toLocaleDateString('pt-BR') : 'N/A';
 
-    // Status
     const statusCru = getColVal(item, mondayStatusColId) || 'A fazer';
     let statusFinal = mondayStatusMap[statusCru] || statusCru || 'A fazer';
     const statusUpper = String(statusFinal).trim().toUpperCase();
@@ -512,57 +519,43 @@ async function gerarExcelParaSprint(
     else if (['FILA'].includes(statusUpper)) statusFinal = 'Fila';
     else if (['EM ANÁLISE', 'EM ANALISE'].includes(statusUpper)) statusFinal = 'Em Análise';
 
-    // Semana e Mês
-    const semanaLinha = dataAberturaObj ? calcularSemana(dataAberturaObj) : 'Semana 1';
-    const mesLinha = dataAberturaObj ? nomeMes(dataAberturaObj) : 'N/A';
+    const semanaLinha = dataEntradaSprint ? calcularSemana(dataEntradaSprint) : 'Semana 1';
+    const mesLinha = dataEntradaSprint ? nomeMes(dataEntradaSprint) : 'N/A';
 
     contagemArea[area] = (contagemArea[area] || 0) + 1;
     contagemTipo[tipo] = (contagemTipo[tipo] || 0) + 1;
     contagemPrio[prioridade] = (contagemPrio[prioridade] || 0) + 1;
     contagemStatus[statusFinal] = (contagemStatus[statusFinal] || 0) + 1;
-    contagemSemanaBurnDown[semanaLinha] = (contagemSemanaBurnDown[semanaLinha] || 0) + 1;
 
     if (['Feito', 'Implantação'].includes(statusFinal)) {
-      const dataRef = dataEncerramentoObj || dataAberturaObj;
+      const dataRef = dataEncerramentoObj || dataEntradaSprint;
       if (dataRef) {
         const sem = calcularSemana(dataRef);
-        contagemSemanaFinalizadosMovidesk[sem] = (contagemSemanaFinalizadosMovidesk[sem] || 0) + 1;
+        contagemSemanaFinalizados[sem] = (contagemSemanaFinalizados[sem] || 0) + 1;
       }
     }
 
-    // Cálculo SLA
-    let dentroSLA = 'Não';
-    let calculoAtraso = 0;
-
-    if (dataAberturaObj && !isNaN(dataAberturaObj.getTime())) {
-      const statusFinalizado = ['Feito', 'Implantação', 'Concluído', 'Encerrado'].includes(statusFinal);
-      if (dataEncerramentoObj && !isNaN(dataEncerramentoObj.getTime()) && statusFinalizado) {
-        const dias = Math.ceil((dataEncerramentoObj - dataAberturaObj) / (1000 * 60 * 60 * 24));
-        dentroSLA = dias <= 15 ? 'Sim' : 'Não';
-        calculoAtraso = dias <= 15 ? 0 : dias - 15;
-      } else {
-        const aging = Math.ceil((new Date() - dataAberturaObj) / (1000 * 60 * 60 * 24));
-        dentroSLA = aging <= 15 ? 'Sim' : 'Não';
-        calculoAtraso = aging <= 15 ? 0 : aging - 15;
-      }
-    }
+    // SLA calculado a partir da entrada na sprint (created_at do Monday)
+    // Tickets abertos retornam 'Aberto' e não entram nos contadores do gráfico
+    const { dentroSLA, atraso } = calcularSLA(dataEntradaSprint, dataEncerramentoObj, statusFinal);
 
     if (dentroSLA === 'Sim') {
       dentroSLACount++;
-    } else {
+    } else if (dentroSLA === 'Não') {
       foraSLACount++;
-      ticketsForaSLA.push({ ticket: ticketId, area, titulo, prioridade, atraso: calculoAtraso });
+      ticketsForaSLA.push({ ticket: ticketId, area, titulo, prioridade, atraso });
     }
+    // 'Aberto' não incrementa nenhum contador
 
-    // Tempo de resolução
+    // Tempo de resolução (apenas tickets concluídos)
     let tempoResolucao = mov.tempoResolucao ?? 'N/A';
     const isConcluido = ['Feito', 'Implantação'].includes(statusFinal);
     if (isConcluido) {
       if (typeof tempoResolucao === 'number') {
         totalTempoResolucao += tempoResolucao;
         countResolvidos++;
-      } else if (dataAberturaObj && dataEncerramentoObj) {
-        const dias = Math.ceil((dataEncerramentoObj - dataAberturaObj) / 86400000);
+      } else if (dataEntradaSprint && dataEncerramentoObj) {
+        const dias = Math.ceil((dataEncerramentoObj - dataEntradaSprint) / 86400000);
         totalTempoResolucao += dias;
         countResolvidos++;
         tempoResolucao = dias;
@@ -572,17 +565,21 @@ async function gerarExcelParaSprint(
     const row = ticketsSheet.addRow({
       ticket: ticketId, area, tipo, categoria, titulo,
       descricao, prioridade, solicitante, equipe,
-      abertura, encerramento, status: statusFinal,
-      semana: semanaLinha, mes: mesLinha,
+      abertura: aberturaFormatada,
+      encerramento: encerramentoFormatado,
+      status: statusFinal,
+      sla: dentroSLA,
+      semana: semanaLinha,
+      mes: mesLinha,
     });
     row.eachCell(cell => { cell.alignment = { vertical: 'middle', wrapText: true }; });
   }
 
-  const totalTicketsDaSprint = itensDaSprint.length;
-  const percentualSLA = totalTicketsDaSprint > 0 ? (dentroSLACount / totalTicketsDaSprint) : 0;
+  // percentualSLA calculado apenas sobre tickets encerrados (abertos ignorados)
+  const totalEncerrados = dentroSLACount + foraSLACount;
+  const percentualSLA = totalEncerrados > 0 ? (dentroSLACount / totalEncerrados) : 0;
   const tempoMedio = countResolvidos > 0 ? (totalTempoResolucao / countResolvidos).toFixed(2) : 0;
 
-  // --- ABA CAMPOS PERSONALIZADOS CLIENTES (opcional) ---
   if (listaEstruturaCamposClientes && listaEstruturaCamposClientes.length > 0) {
     const camposClientesSheet = workbook.addWorksheet('Campos Personalizados Clientes');
     camposClientesSheet.columns = [
@@ -592,7 +589,6 @@ async function gerarExcelParaSprint(
       { header: 'ID do Item Opção', key: 'customFieldItemId', width: 18 },
       { header: 'Nome/Valor da Opção (customFieldItem)', key: 'customFieldItem', width: 40 }
     ];
-
     camposClientesSheet.getRow(1).eachCell(cell => {
       cell.fill = estiloAzul;
       cell.font = fonteBranca;
@@ -621,40 +617,31 @@ async function gerarExcelParaSprint(
         }
       }
     }
-    console.log(`[Excel] ${listaEstruturaCamposClientes.length} estruturas de campos adicionadas ao Excel.`);
   }
 
-  // --- ABA DASHBOARD ---
   const dashSheet = workbook.addWorksheet('Dashboard');
   dashSheet.views = [{ showGridLines: true }];
-
   dashSheet.mergeCells('A1:C1');
   dashSheet.getCell('A1').value = 'Dashboard de Change Log - Governança de TI';
   dashSheet.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FF034C8C' } };
-
   dashSheet.getCell('A2').value = 'Período';
   dashSheet.getCell('B2').value = sprintNome.toUpperCase();
   dashSheet.getCell('D2').value = 'Base';
   dashSheet.mergeCells('E2:H2');
   dashSheet.getCell('E2').value = 'Tickets corporativos para intranet / Power BI / Excel';
-
   dashSheet.getCell('A4').value = 'Total de tickets';
   dashSheet.getCell('A5').value = totalTicketsDaSprint;
   dashSheet.getCell('A5').font = fonteNegrito;
-
   dashSheet.getCell('D4').value = '% dentro do SLA';
   dashSheet.getCell('D5').value = percentualSLA;
   dashSheet.getCell('D5').numFmt = '0.00%';
   dashSheet.getCell('D5').font = fonteNegrito;
-
   dashSheet.getCell('G4').value = 'Tempo médio (dias)';
   dashSheet.getCell('G5').value = parseFloat(tempoMedio);
   dashSheet.getCell('G5').font = fonteNegrito;
-
   dashSheet.getCell('J4').value = 'Áreas atendidas';
   dashSheet.getCell('J5').value = Object.keys(contagemArea).length;
   dashSheet.getCell('J5').font = fonteNegrito;
-
   ['A4', 'D4', 'G4', 'J4'].forEach(pos => {
     dashSheet.getCell(pos).fill = estiloAzul;
     dashSheet.getCell(pos).font = fonteBranca;
@@ -667,7 +654,6 @@ async function gerarExcelParaSprint(
       left: { style: 'thin' }, right: { style: 'thin' }
     };
   });
-
   dashSheet.getCell('J21').value = 'Status final';
   dashSheet.getCell('J21').font = fonteNegrito;
   ['Feito', 'Implantação', 'Encerrado'].forEach((s, i) => {
@@ -675,51 +661,43 @@ async function gerarExcelParaSprint(
     dashSheet.getCell(`K${22 + i}`).value = contagemStatus[s] || 0;
   });
 
-  // --- ABA RESUMO ---
   const resumoSheet = workbook.addWorksheet('Resumo');
   resumoSheet.views = [{ showGridLines: true }];
-
   resumoSheet.getCell('A1').value = 'Resumo Executivo'; resumoSheet.getCell('A1').font = fonteNegrito;
   resumoSheet.getCell('A2').value = 'Total de tickets'; resumoSheet.getCell('B2').value = totalTicketsDaSprint;
   resumoSheet.getCell('A5').value = percentualSLA; resumoSheet.getCell('B5').numFmt = '0.00%';
   resumoSheet.getCell('A6').value = parseFloat(tempoMedio);
   resumoSheet.getCell('A7').value = Object.keys(contagemArea).length;
-
   resumoSheet.getCell('A9').value = 'Tickets por Área'; resumoSheet.getCell('A9').font = fonteNegrito;
   Object.entries(contagemArea).sort((a, b) => b[1] - a[1]).forEach(([a, q], i) => {
     resumoSheet.getCell(`A${10 + i}`).value = a;
     resumoSheet.getCell(`B${10 + i}`).value = q;
   });
-
   resumoSheet.getCell('D9').value = 'Distribuição por Tipo'; resumoSheet.getCell('D9').font = fonteNegrito;
   Object.entries(contagemTipo).sort((a, b) => b[1] - a[1]).forEach(([t, q], i) => {
     resumoSheet.getCell(`D${10 + i}`).value = t;
     resumoSheet.getCell(`E${10 + i}`).value = q;
   });
-
   resumoSheet.getCell('G9').value = 'Prioridade'; resumoSheet.getCell('G9').font = fonteNegrito;
   ['Muito Alta', 'Alta', 'Média', 'Baixa', 'Não definida'].forEach((p, i) => {
     resumoSheet.getCell(`G${10 + i}`).value = p;
     resumoSheet.getCell(`H${10 + i}`).value = contagemPrio[p] || 0;
   });
-
-  resumoSheet.getCell('J9').value = 'Cumprimento SLA'; resumoSheet.getCell('J9').font = fonteNegrito;
+  resumoSheet.getCell('J9').value = 'Cumprimento SLA (15 dias)'; resumoSheet.getCell('J9').font = fonteNegrito;
   resumoSheet.getCell('J10').value = 'Sim'; resumoSheet.getCell('K10').value = dentroSLACount;
   resumoSheet.getCell('J11').value = 'Não'; resumoSheet.getCell('K11').value = foraSLACount;
-
+  resumoSheet.getCell('J12').value = 'Abertos'; resumoSheet.getCell('K12').value = totalTicketsDaSprint - totalEncerrados;
   resumoSheet.getCell('M9').value = 'Status Final'; resumoSheet.getCell('M9').font = fonteNegrito;
   ['Feito', 'A fazer', 'Impedimento', 'Fazendo', 'Implantação', 'Homologação', 'Fila', 'Em Análise'].forEach((s, i) => {
     resumoSheet.getCell(`M${10 + i}`).value = s;
     resumoSheet.getCell(`N${10 + i}`).value = contagemStatus[s] || 0;
   });
-
   resumoSheet.getCell('P9').value = 'Tickets por Semana'; resumoSheet.getCell('P9').font = fonteNegrito;
   resumoSheet.getCell('Q9').value = 'Volume'; resumoSheet.getCell('Q9').font = fonteNegrito;
-  Object.entries(contagemSemanaFinalizadosMovidesk).sort((a, b) => a[0].localeCompare(b[0])).forEach(([semana, qtd], i) => {
+  Object.entries(contagemSemanaFinalizados).sort((a, b) => a[0].localeCompare(b[0])).forEach(([semana, qtd], i) => {
     resumoSheet.getCell(`P${10 + i}`).value = semana;
     resumoSheet.getCell(`Q${10 + i}`).value = qtd;
   });
-
   resumoSheet.getCell('D19').value = 'Top tickets fora do SLA'; resumoSheet.getCell('D19').font = fonteNegrito;
   resumoSheet.getRow(20).height = 18;
   ['D20', 'E20', 'F20', 'G20'].forEach((c, i) => {
@@ -729,7 +707,6 @@ async function gerarExcelParaSprint(
     cell.font = fonteBranca;
     cell.alignment = { vertical: 'middle', horizontal: 'center' };
   });
-
   ticketsForaSLA
     .filter(t => typeof t.atraso === 'number')
     .sort((a, b) => b.atraso - a.atraso)
@@ -742,7 +719,6 @@ async function gerarExcelParaSprint(
       resumoSheet.getCell(`G${rIdx}`).value = t.titulo;
       resumoSheet.getRow(rIdx).alignment = { vertical: 'middle', wrapText: true };
     });
-
   resumoSheet.getColumn(1).width = 30;
   resumoSheet.getColumn(2).width = 15;
   resumoSheet.getColumn(4).width = 18;
@@ -764,9 +740,6 @@ async function gerarExcelParaSprint(
   };
 }
 
-// ==========================================
-// 7. ORQUESTRADOR PRINCIPAL
-// ==========================================
 async function sincronizarMondaySprints(
   token, boardId,
   mondayTextColId, mondayStatusColId, mondayPriorityColId,
@@ -826,7 +799,6 @@ async function sincronizarMondaySprints(
     }
   }
 
-  // Gera índice estático sprints.json para uso offline
   try {
     const arquivosNaPasta = await fs.readdir(dirPath);
     const listaCompletaSprints = arquivosNaPasta
@@ -846,9 +818,9 @@ async function sincronizarMondaySprints(
       JSON.stringify(listaCompletaSprints, null, 2),
       'utf8'
     );
-    console.log('[Altona Engine] Índice estático utils/sprints.json atualizado.');
+    console.log('[Altona] Índice estático utils/sprints.json atualizado.');
   } catch (errDiscovery) {
-    console.error('[Altona Engine] Erro ao gerar sprints.json:', errDiscovery.message);
+    console.error('[Altona] Erro ao gerar sprints.json:', errDiscovery.message);
   }
 
   return resultados;
