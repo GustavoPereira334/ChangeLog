@@ -17,14 +17,13 @@ if (resultDotEnv.error) {
 
 const { sincronizarMondaySprints } = require('./monday');
 
-// ============================================================
 // CONFIGURAÇÃO GERAL
-// ============================================================
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const dirPath = path.join(__dirname, '..', 'utils');
+
 
 app.use(cors());
 app.use(express.json());
@@ -40,31 +39,6 @@ watcher.on('add', filePath => {
     console.log(`[${new Date().toLocaleTimeString()}] Novo arquivo detectado: ${path.basename(filePath)}`);
 });
 
-// ============================================================
-// MIDDLEWARE DE AUTENTICAÇÃO POR API KEY
-// Protege todas as rotas de sincronização e admin
-// ============================================================
-function autenticarApiKey(req, res, next) {
-    const apiKey = req.headers['x-api-key'];
-    const apiKeyEsperada = process.env.SYNC_API_KEY;
-
-    if (!apiKeyEsperada) {
-        console.error('[Auth] SYNC_API_KEY não configurada no .env');
-        return res.status(500).json({ success: false, erro: 'API Key não configurada no servidor.' });
-    }
-
-    if (!apiKey || apiKey !== apiKeyEsperada) {
-        console.warn(`[Auth] Tentativa de acesso não autorizado em: ${req.path}`);
-        return res.status(401).json({ success: false, erro: 'Não autorizado. API Key inválida ou ausente.' });
-    }
-
-    next();
-}
-
-// ============================================================
-// HELPER INTERNO DE SINCRONIZAÇÃO
-// Centraliza a lógica usada pelo cron e pela rota manual
-// ============================================================
 async function executarSincronizacaoCompleta() {
     const movideskToken = process.env.MOVIDESK_TOKEN;
     const mondayToken = process.env.MONDAY_TOKEN;
@@ -102,25 +76,25 @@ async function executarSincronizacaoCompleta() {
         dirPath
     );
 
-    console.log('[Sync] Monday concluído. Arquivos:', result.map(r => r.nome_exibicao).join(', '));
+    console.log('[Sinc Monday] Monday concluído. Arquivos:', result.map(r => r.nome_exibicao).join(', '));
     return result;
 }
 
-// ============================================================
-// CRON JOB — SINCRONIZAÇÃO AUTOMÁTICA A CADA 15 DIAS
-// ============================================================
+
+// agendamento para Sincronização a cada 15 dias
+
 const QUINZE_DIAS_MS = 15 * 24 * 60 * 60 * 1000;
 
 function agendarProximaSincronizacao() {
-    console.log(`[Cron] Próxima sincronização agendada em 15 dias (${new Date(Date.now() + QUINZE_DIAS_MS).toLocaleString()}).`);
+    console.log(`[Sincronização] Próxima sincronização agendada em 15 dias (${new Date(Date.now() + QUINZE_DIAS_MS).toLocaleString()}).`);
 
     setTimeout(async () => {
-        console.log('[Cron] Disparando sincronização automática...');
+        console.log('[Sincronização] Disparando sincronização automática...');
         try {
             await executarSincronizacaoCompleta();
-            console.log('[Cron] Sincronização automática concluída com sucesso.');
+            console.log('[Sincronização] Sincronização automática concluída com sucesso.');
         } catch (err) {
-            console.error('[Cron] Erro na sincronização automática:', err.message);
+            console.error('[Sincronização] Erro na sincronização automática:', err.message);
         } finally {
             agendarProximaSincronizacao(); // reagenda para o próximo ciclo
         }
@@ -160,7 +134,7 @@ app.get('/api/sprints-da-pasta', async (req, res) => {
 // ============================================================
 
 // Sincronização manual completa (dev only)
-app.get('/api/sincronizar-tudo', autenticarApiKey, async (req, res) => {
+app.get('/api/sincronizar-tudo', async (req, res) => {
     try {
         const result = await executarSincronizacaoCompleta();
         res.status(200).json({
@@ -177,7 +151,8 @@ app.get('/api/sincronizar-tudo', autenticarApiKey, async (req, res) => {
 
 // Utilitário: lista campos personalizados de clientes no Movidesk
 // Útil para identificar o ID correto do campo Setor
-app.get('/api/campos-clientes', autenticarApiKey, async (req, res) => {
+app.get('/api/campos-clientes', async (req, res) => {
+
     try {
         const TOKEN = process.env.MOVIDESK_TOKEN;
         if (!TOKEN) throw new Error("MOVIDESK_TOKEN não configurado no .env");

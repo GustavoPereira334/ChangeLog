@@ -4,9 +4,7 @@ google.charts.load('current', { 'packages': ['corechart'] });
 // Carrega o menu inicial ao inicializar o arquivo
 carregarMenuBanco();
 
-// ============================================================
-// SELETOR DE SPRINT E CARREGAMENTO EXCEL
-// ============================================================
+// Seletor de sprint e carrega os excel
 document.getElementById('selectSprint').addEventListener('change', function () {
     const urlArquivo = this.value;
     if (!urlArquivo) return;
@@ -26,9 +24,7 @@ document.getElementById('selectSprint').addEventListener('change', function () {
         });
 });
 
-// ============================================================
-// PROCESSAMENTO DOS DADOS DO EXCEL
-// ============================================================
+// Processa as informações do excel
 function processarDados(workbook) {
     try {
         const abaDash = workbook.Sheets['Dashboard'];
@@ -96,40 +92,47 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
     let contagemSLA = { 'Sim': 0, 'Não': 0 };
 
     resumoJson.forEach((row, i) => {
-        if (i < 9) return;
+        if (i < 9 || !row) return;
 
-        if (row && row[0] && row[1] !== undefined) {
+        // 1. Gráfico de Áreas (Coluna A e B)
+        if (row[0] !== undefined && row[1] !== undefined) {
             const valor = parseFloat(row[1]);
             const texto = String(row[0]).trim();
             if (!isNaN(valor) && !texto.toUpperCase().includes('TICKETS') &&
-                !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('SEMANA')) {
+                !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('SEMANA') && texto !== '') {
                 contagemArea[texto] = valor;
             }
         }
 
-        if (row && row[3] && row[4] !== undefined) {
+        // 2. Gráfico de Tipos (Coluna D e E)
+        if (row[3] !== undefined && row[4] !== undefined) {
             const valor = parseFloat(row[4]);
             const texto = String(row[3]).trim();
-            if (!isNaN(valor) && !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('TIPO')) {
+            if (!isNaN(valor) && !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('TIPO') && texto !== '') {
                 contagemTipo[texto] = valor;
             }
         }
 
-        if (row && row[6] && row[7] !== undefined) {
+        // 3. Gráfico de Prioridades (Coluna G e H)
+        if (row[6] !== undefined && row[7] !== undefined) {
             const valor = parseFloat(row[7]);
             const texto = String(row[6]).trim();
-            const prioChave = (texto === 'Muito Alta' || texto === 'CRÍTICA') ? 'Crítica' : texto;
-            if (!isNaN(valor) && contagemPrio[prioChave] !== undefined) {
+            const prioChave = (texto === 'Muito Alta' || texto === 'CRÍTICA' || texto === 'Crítica') ? 'Crítica' : texto;
+            if (!isNaN(valor) && contagemPrio[prioChave] !== undefined && texto !== '') {
                 contagemPrio[prioChave] = valor;
             }
         }
 
-        if (row && row[9] && row[10] !== undefined) {
+        // 4. CORREÇÃO DA LEITURA DO SLA (Coluna J e K)
+        // Valida se o índice existe na linha sem usar row[10] direto na condicional (evita ignorar o número 0)
+        if (row[9] !== undefined && row[10] !== undefined) {
             const valor = parseFloat(row[10]);
-            const texto = String(row[9]).trim();
+            // Normaliza o texto removendo espaços e acentos para prevenir falhas de correspondência
+            const texto = String(row[9]).trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
             if (!isNaN(valor)) {
-                if (texto === 'Sim') contagemSLA['Sim'] = valor;
-                if (texto === 'Não') contagemSLA['Não'] = valor;
+                if (texto === 'SIM') contagemSLA['Sim'] = valor;
+                if (texto === 'NAO') contagemSLA['Não'] = valor;
             }
         }
     });
