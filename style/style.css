@@ -344,32 +344,120 @@ footer {
 }
 
 
-@media (max-width: 1200px) {
+/* ============================================================
+   MEDIA QUERIES (ADAPTAÇÃO ADAPTADA PARA TELAS)
+   ============================================================ */
+
+/* LAPTOPS E NOTEBOOKS (Telas entre 1024px e 1366px) */
+@media (max-width: 1366px) {
+    header h1 {
+        font-size: 1.7rem;
+    }
+    
+    header p {
+        font-size: 1rem;
+    }
+
+    .value {
+        font-size: 1.8rem;
+    }
+
+    /* Transforma o Grid de 3 colunas em 2 colunas para caber no notebook sem espremer */
     .DashBoards {
-        grid-template-columns: 1fr 1fr; /* Quebra para duas colunas em telas médias */
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    /* Faz a última coluna (tabela SLA e burn down) ocupar a largura total abaixo das outras */
+    .DashBoards .coluna-dash:last-child {
+        grid-column: span 2;
+        flex-direction: row; /* Coloca a tabela e o burn down lado a lado */
+        gap: 20px;
+    }
+
+    .DashBoards .coluna-dash:last-child > div {
+        flex: 1; /* Distribui o espaço igualmente entre as duas caixas */
+    }
+}
+/*TABLETS (Telas até 1024px) */
+@media (max-width: 1024px) {
+    header {
+        padding: 20px;
+        min-height: auto;
+    }
+
+    /* Cards superiores passam a ocupar duas colunas em vez de uma linha reta */
+    .cards > div {
+        flex: 1 1 calc(50% - 20px);
+    }
+
+    /* Desfaz a linha horizontal da última coluna criada para notebooks */
+    .DashBoards .coluna-dash:last-child {
+        flex-direction: column;
     }
 }
 
+/*  SMARTPHONES E PEQUENOS TABLETS (Telas até 768px) */
 @media (max-width: 768px) {
-    .DashBoards {
-        grid-template-columns: 1fr; /* Alinha tudo verticalmente em celulares */
-    }
-
     header {
         flex-direction: column;
         text-align: center;
         padding: 20px;
+        gap: 15px;
     }
 
     .containerHeader {
         margin-left: 0;
+        padding: 0;
     }
 
-    .filters {
-        flex-direction: column;
+    .estatisticas {
+        justify-content: center;
+        flex-wrap: wrap;
+        font-size: 0.9rem;
     }
 
+    .SelectorSprintColor {
+        justify-content: center;
+        padding: 10px;
+    }
+
+    .filtroSprint {
+        margin-right: 0;
+    }
+
+    /* Transforma os gráficos em uma única coluna vertical empilhada */
+    .DashBoards {
+        grid-template-columns: 1fr;
+    }
+
+    .DashBoards .coluna-dash:last-child {
+        grid-column: span 1;
+    }
+
+    /* Empilha os cards superiores verticalmente */
     .cards {
         flex-direction: column;
+    }
+
+    .cards > div {
+        flex: 1 1 100%;
+    }
+
+    /* Alinha os filtros da tabela inferior um embaixo do outro */
+    .filters {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .filters input, 
+    .filters select {
+        width: 100%;
+    }
+
+    /* Adiciona rolagem horizontal nas tabelas para não quebrar o layout do celular */
+    .tabela-container, 
+    .tabelaSLA {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
     }
 }

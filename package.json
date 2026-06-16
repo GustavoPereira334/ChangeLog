@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "description": "",
   "main": "script/server.js",
-  "scripts": {
+   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node script/server.js",
-    "dev": "nodemon script/server.js"
+    "dev": "nodemon script/server.js",
+    "scan": "node tests/scaner.js"
   },
+
   "keywords": [],
   "author": "",
   "license": "ISC",

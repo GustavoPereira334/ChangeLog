@@ -124,7 +124,7 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         }
 
         // 4. CORREÇÃO DA LEITURA DO SLA (Coluna J e K)
-        // Valida se o índice existe na linha sem usar row[10] direto na condicional (evita ignorar o número 0)
+        // Valida se o índice existe na linha sem usar row[10] direto na condicional
         if (row[9] !== undefined && row[10] !== undefined) {
             const valor = parseFloat(row[10]);
             // Normaliza o texto removendo espaços e acentos para prevenir falhas de correspondência
