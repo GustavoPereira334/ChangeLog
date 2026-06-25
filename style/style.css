@@ -242,22 +242,48 @@ main {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.8rem;
+    table-layout: fixed;
 }
 
 .tabelaSLA th {
     background-color: #f8f9fa;
-    padding: 8px;
+    padding: 8px 10px;
     text-align: left;
     border-bottom: 2px solid #dee2e6;
     color: #333;
     position: static !important;
     box-shadow: none !important;
+    white-space: nowrap;
 }
 
 .tabelaSLA td {
-    padding: 8px;
+    padding: 8px 10px;
     border-bottom: 1px solid #eee;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.tabelaSLA .col-id {
+    width: 64px;
+}
+
+.tabelaSLA .col-area {
+    width: 180px;
+}
+
+.tabelaSLA td:nth-child(1),
+.tabelaSLA th:nth-child(1) {
+    width: 64px;
+}
+
+.tabelaSLA td:nth-child(3),
+.tabelaSLA th:nth-child(3) {
+    width: 180px;
+}
+
+.tabelaSLA td:nth-child(2) {
+    max-width: 0;
 }
 
 .obs-texto {
@@ -459,5 +485,15 @@ footer {
     .tabelaSLA {
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
+    }
+
+    .tabelaSLA table {
+        min-width: 520px;
+    }
+
+    .tabelaSLA .col-area,
+    .tabelaSLA td:nth-child(3),
+    .tabelaSLA th:nth-child(3) {
+        width: 140px;
     }
 }

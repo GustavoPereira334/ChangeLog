@@ -13,6 +13,7 @@ node_modules/
 jspm_packages/
 .pnp
 .pnp.js
+sincronizar.bat
 
 # =========================================================================
 # 3. ARQUIVOS GERADOS / PLANILHAS DO DASHBOARD (ALTONA ENGINE)

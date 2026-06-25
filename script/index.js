@@ -1,10 +1,28 @@
 // Inicializa o Google Charts
-google.charts.load('current', { 'packages': ['corechart'] });
+google.charts.load('current', { packages: ['corechart'] });
 
-// Carrega o menu inicial ao inicializar o arquivo
+// Carrega o menu inicial
 carregarMenuBanco();
 
-// Seletor de sprint e carrega os excel
+// Helpers
+function normalizar(valor) {
+    return String(valor || '')
+        .trim()
+        .toUpperCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+}
+
+function pegarCampo(obj, nomes, padrao = '-') {
+    for (const nome of nomes) {
+        if (obj[nome] !== undefined && obj[nome] !== null && String(obj[nome]).trim() !== '') {
+            return obj[nome];
+        }
+    }
+    return padrao;
+}
+
+// Seletor de sprint
 document.getElementById('selectSprint').addEventListener('change', function () {
     const urlArquivo = this.value;
     if (!urlArquivo) return;
@@ -20,11 +38,10 @@ document.getElementById('selectSprint').addEventListener('change', function () {
         })
         .catch(err => {
             console.error('Erro ao carregar Excel:', err);
-            alert('Erro ao abrir o arquivo Excel. Verifique se o servidor está rodando.');
+            alert('Verifique se o servidor está rodando.');
         });
 });
 
-// Processa as informações do excel
 function processarDados(workbook) {
     try {
         const abaDash = workbook.Sheets['Dashboard'];
@@ -40,35 +57,33 @@ function processarDados(workbook) {
         const vAreas = abaDash['J5'] ? abaDash['J5'].v : 0;
         const vPeriodo = abaDash['B2'] ? (abaDash['B2'].w || abaDash['B2'].v) : 'N/A';
 
-        // Calcula atendidos: Feito + Implantação + Encerrado via aba Resumo
         const concluido = abaResumo['N10'] ? abaResumo['N10'].v : 0;
         const implantado = abaResumo['N11'] ? abaResumo['N11'].v : 0;
         const encerrado = abaResumo['N12'] ? abaResumo['N12'].v : 0;
         const vAtendidos = concluido + implantado + encerrado;
         const vPercentual = vTotal > 0 ? Math.round((vAtendidos / vTotal) * 100) : 0;
 
-        // Cards superiores
         document.getElementById('cardTotal').innerText = vTotal;
         document.getElementById('cardAtendidos').innerText = vAtendidos;
         document.getElementById('cardPercentual').innerText = vPercentual + '%';
         document.getElementById('cardAreas').innerText = vAreas;
 
-        // Estatísticas do header
         document.getElementById('resumoPeriodo').innerText = vPeriodo;
         document.getElementById('resumoTotal').innerText = vTotal;
         document.getElementById('resumoAreas').innerText = vAreas;
         document.getElementById('resumoAtendidos').innerText = vAtendidos;
 
-        // Tabela principal de tickets
         const jsonData = XLSX.utils.sheet_to_json(abaTickets);
-        document.getElementById('output').innerHTML = XLSX.utils.sheet_to_html(XLSX.utils.json_to_sheet(jsonData));
+        const jsonDataTabela = jsonData.filter(ticket => {
+            const origem = normalizar(pegarCampo(ticket, ['Origem', 'origem'], 'Planejado'));
+            return !origem.includes('FORA');
+        });
+
+        document.getElementById('output').innerHTML = XLSX.utils.sheet_to_html(XLSX.utils.json_to_sheet(jsonDataTabela));
 
         atualizaFiltrosTable();
-
-        // Tabela SLA — tickets encerrados fora do prazo
         renderizarTabelaSLA(jsonData);
 
-        // Google Charts
         google.charts.setOnLoadCallback(() => {
             renderizarTodosGraficos(abaResumo, jsonData);
             setTimeout(colorirNomesTabela, 120);
@@ -80,69 +95,62 @@ function processarDados(workbook) {
     }
 }
 
-// ============================================================
-// MOTOR DE COMPOSIÇÃO DOS GRÁFICOS
-// ============================================================
 function renderizarTodosGraficos(abaResumo, jsonData) {
     const resumoJson = XLSX.utils.sheet_to_json(abaResumo, { header: 1 });
 
     let contagemArea = {};
     let contagemTipo = {};
     let contagemPrio = { 'Crítica': 0, 'Alta': 0, 'Média': 0, 'Baixa': 0 };
-    let contagemSLA = { 'Sim': 0, 'Não': 0 };
+    let contagemPlanejamento = { 'Planejado': 0, 'Fora da Sprint': 0 };
 
     resumoJson.forEach((row, i) => {
         if (i < 9 || !row) return;
 
-        // 1. Gráfico de Áreas (Coluna A e B)
         if (row[0] !== undefined && row[1] !== undefined) {
             const valor = parseFloat(row[1]);
             const texto = String(row[0]).trim();
-            if (!isNaN(valor) && !texto.toUpperCase().includes('TICKETS') &&
-                !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('SEMANA') && texto !== '') {
+            if (!isNaN(valor) && texto !== '' &&
+                !normalizar(texto).includes('TICKETS') &&
+                !normalizar(texto).includes('DISTRIBUICAO') &&
+                !normalizar(texto).includes('SEMANA')) {
                 contagemArea[texto] = valor;
             }
         }
 
-        // 2. Gráfico de Tipos (Coluna D e E)
         if (row[3] !== undefined && row[4] !== undefined) {
             const valor = parseFloat(row[4]);
             const texto = String(row[3]).trim();
-            if (!isNaN(valor) && !texto.toUpperCase().includes('DISTRIBUIÇÃO') && !texto.toUpperCase().includes('TIPO') && texto !== '') {
+            if (!isNaN(valor) && texto !== '' &&
+                !normalizar(texto).includes('DISTRIBUICAO') &&
+                !normalizar(texto).includes('TIPO')) {
                 contagemTipo[texto] = valor;
             }
         }
 
-        // 3. Gráfico de Prioridades (Coluna G e H)
         if (row[6] !== undefined && row[7] !== undefined) {
             const valor = parseFloat(row[7]);
             const texto = String(row[6]).trim();
-            const prioChave = (texto === 'Muito Alta' || texto === 'CRÍTICA' || texto === 'Crítica') ? 'Crítica' : texto;
+            const prioChave = ['MUITO ALTA', 'CRITICA'].includes(normalizar(texto)) ? 'Crítica' : texto;
             if (!isNaN(valor) && contagemPrio[prioChave] !== undefined && texto !== '') {
                 contagemPrio[prioChave] = valor;
             }
         }
+    });
 
-        // 4. CORREÇÃO DA LEITURA DO SLA (Coluna J e K)
-        // Valida se o índice existe na linha sem usar row[10] direto na condicional
-        if (row[9] !== undefined && row[10] !== undefined) {
-            const valor = parseFloat(row[10]);
-            // Normaliza o texto removendo espaços e acentos para prevenir falhas de correspondência
-            const texto = String(row[9]).trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-
-            if (!isNaN(valor)) {
-                if (texto === 'SIM') contagemSLA['Sim'] = valor;
-                if (texto === 'NAO') contagemSLA['Não'] = valor;
-            }
+    jsonData.forEach(ticket => {
+        const origem = normalizar(pegarCampo(ticket, ['Origem', 'origem'], 'Planejado'));
+        if (origem.includes('FORA')) {
+            contagemPlanejamento['Fora da Sprint']++;
+        } else {
+            contagemPlanejamento['Planejado']++;
         }
     });
 
     let semanas = { 'Semana 1': 0, 'Semana 2': 0, 'Semana 3': 0, 'Semana 4': 0, 'Semana 5': 0 };
 
     jsonData.forEach(ticket => {
-        const statusTicket = ticket['Status'] ? String(ticket['Status']).trim().toUpperCase() : '';
-        const semanaCrua = ticket['Semana'] || ticket['semana'] || ticket['SEMANA'] || '';
-        let nomeSemana = String(semanaCrua).trim();
+        const statusTicket = normalizar(ticket['Status']);
+        let nomeSemana = String(ticket['Semana'] || ticket['semana'] || ticket['SEMANA'] || '').trim();
 
         if (nomeSemana === '1') nomeSemana = 'Semana 1';
         if (nomeSemana === '2') nomeSemana = 'Semana 2';
@@ -150,12 +158,11 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         if (nomeSemana === '4') nomeSemana = 'Semana 4';
         if (nomeSemana === '5') nomeSemana = 'Semana 5';
 
-        if (['CONCLUÍDO', 'IMPLANTADO', 'ENCERRADO', 'FEITO', 'DONE'].includes(statusTicket)) {
+        if (['CONCLUIDO', 'IMPLANTADO', 'ENCERRADO', 'FEITO', 'DONE', 'IMPLANTACAO'].includes(statusTicket)) {
             if (semanas[nomeSemana] !== undefined) semanas[nomeSemana]++;
         }
     });
 
-    // Gráfico: Tickets por Área
     const dataSetor = new google.visualization.DataTable();
     dataSetor.addColumn('string', 'Área');
     dataSetor.addColumn('number', 'Quantidade');
@@ -170,7 +177,6 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         vAxis: { format: '0', viewWindow: { min: 0 } }
     });
 
-    // Gráfico: Distribuição por Tipo
     const dataTipo = new google.visualization.DataTable();
     dataTipo.addColumn('string', 'Tipo');
     dataTipo.addColumn('number', 'Qtd');
@@ -184,7 +190,6 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         legend: { position: 'right' }
     });
 
-    // Gráfico: Tickets por Prioridade
     const dataPrio = new google.visualization.DataTable();
     dataPrio.addColumn('string', 'Prioridade');
     dataPrio.addColumn('number', 'Qtd');
@@ -200,24 +205,23 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
         vAxis: { minValue: 0, format: '0' }
     });
 
-    // Gráfico: Cumprimento de SLA
-    const dataSLA = google.visualization.arrayToDataTable([
-        ['SLA', 'Valor'],
-        ['Sim', contagemSLA['Sim'] || 0],
-        ['Não', contagemSLA['Não'] || 0]
+    const dataPlanejamento = google.visualization.arrayToDataTable([
+        ['Origem', 'Quantidade'],
+        ['Planejado', contagemPlanejamento['Planejado'] || 0],
+        ['Fora da Sprint', contagemPlanejamento['Fora da Sprint'] || 0]
     ]);
 
-    new google.visualization.PieChart(document.getElementById('chart_sla')).draw(dataSLA, {
-        title: 'Cumprimento de SLA',
+    new google.visualization.PieChart(document.getElementById('chart_sla')).draw(dataPlanejamento, {
+        title: 'Planejado x Fora da Sprint',
         colors: ['#034C8C', '#fd7e14'],
         chartArea: { width: '90%', height: '80%' },
         legend: { position: 'right' }
     });
 
-    // Gráfico: Tickets Finalizados por Semana
     const dataBurn = new google.visualization.DataTable();
     dataBurn.addColumn('string', 'Semana');
     dataBurn.addColumn('number', 'Quantidade');
+
     ['Semana 1', 'Semana 2', 'Semana 3', 'Semana 4', 'Semana 5'].forEach(sem => {
         dataBurn.addRow([sem, semanas[sem]]);
     });
@@ -232,9 +236,6 @@ function renderizarTodosGraficos(abaResumo, jsonData) {
     });
 }
 
-// ============================================================
-// COLORIZAÇÃO DA TABELA
-// ============================================================
 function colorirNomesTabela() {
     const container = document.getElementById('output');
     if (!container) return;
@@ -262,7 +263,10 @@ function colorirNomesTabela() {
         'HOMOLOGAÇÃO': { color: '#9c27b0', bg: '#f3e5f5' },
         'NOVO RECURSO': { color: '#964B00', bg: '#F5EBE0' },
         'NOVO SISTEMA': { color: '#964B00', bg: '#F5EBE0' },
+        'ATUALIZAÇÃO DE VERSÃO': { color: '#6a1b9a', bg: '#f3e5f5' },
         'ANÁLISE': { color: 'white', bg: '#1C1C1C' },
+        'PLANEJADO': { color: '#034C8C', bg: '#e3f2fd' },
+        'FORA DA SPRINT': { color: '#fd7e14', bg: '#fff3e0' },
     };
 
     container.querySelectorAll('td').forEach(cell => {
@@ -274,46 +278,48 @@ function colorirNomesTabela() {
     });
 }
 
-// ============================================================
-// TABELA SLA — tickets encerrados fora do prazo
-// ============================================================
 function renderizarTabelaSLA(jsonData) {
     const container = document.getElementById('outputSLA');
-    const SLA_DIAS = 15;
-    const statusEncerrado = ['FEITO', 'IMPLANTADO', 'IMPLANTAÇÃO', 'ENCERRADO', 'CONCLUÍDO'];
 
-    const foraDoSLA = jsonData.filter(ticket => {
-        const status = String(ticket['Status'] || '').trim().toUpperCase();
-        if (!statusEncerrado.includes(status)) return false;
-
-        const abertura = ticket['Abertura'] ? new Date(ticket['Abertura'].split('/').reverse().join('-')) : null;
-        const encerramento = ticket['Encerramento'] ? new Date(ticket['Encerramento'].split('/').reverse().join('-')) : null;
-
-        if (!abertura || !encerramento || isNaN(abertura) || isNaN(encerramento)) return false;
-
-        const dias = Math.ceil((encerramento - abertura) / (1000 * 60 * 60 * 24));
-        return dias > SLA_DIAS;
+    const foraDaSprint = jsonData.filter(ticket => {
+        const origem = normalizar(pegarCampo(ticket, ['Origem', 'origem'], ''));
+        return origem.includes('FORA');
     });
 
-    if (foraDoSLA.length === 0) {
-        container.innerHTML = '<p style="color:#28a745;font-size:0.85rem;padding:10px 0;">Nenhum item encerrado fora do prazo.</p>';
+    if (foraDaSprint.length === 0) {
+        container.innerHTML = '<p style="color:#28a745;font-size:0.85rem;padding:10px 0;">Nenhuma demanda atendida fora da sprint.</p>';
         return;
     }
 
-    const linhas = foraDoSLA.map(ticket => {
-        const id = ticket['Ticket'] || ticket['ticket'] || '—';
-        const titulo = ticket['Título'] || ticket['titulo'] || '—';
-        const area = ticket['Área'] || ticket['area'] || '—';
-        return `
-            <tr>
-                <td>${id}</td>
-                <td>${titulo}</td>
-                <td>${area}</td>
-            </tr>`;
-    }).join('');
+    const vistos = new Set();
+
+    const linhas = foraDaSprint
+        .filter(ticket => {
+            const id = String(pegarCampo(ticket, ['Ticket', 'ticket'], '-')).trim();
+            if (vistos.has(id)) return false;
+            vistos.add(id);
+            return true;
+        })
+        .map(ticket => {
+            const id = pegarCampo(ticket, ['Ticket', 'ticket'], '-');
+            const titulo = pegarCampo(ticket, ['Título', 'Titulo', 'T?tulo', 'T??tulo', 'titulo'], '-');
+            const area = pegarCampo(ticket, ['Área', 'Area', '?rea', '??rea', 'area'], '-');
+
+            return `
+                <tr>
+                    <td title="${id}">${id}</td>
+                    <td title="${titulo}">${titulo}</td>
+                    <td title="${area}">${area}</td>
+                </tr>`;
+        }).join('');
 
     container.innerHTML = `
         <table>
+            <colgroup>
+                <col class="col-id">
+                <col>
+                <col class="col-area">
+            </colgroup>
             <thead>
                 <tr>
                     <th>ID</th>
@@ -325,9 +331,6 @@ function renderizarTabelaSLA(jsonData) {
         </table>`;
 }
 
-// ============================================================
-// FILTROS DA TABELA
-// ============================================================
 function filtrarTabela() {
     const busca = document.getElementById('busca').value.toUpperCase();
     const areaSelecionada = document.getElementById('areaBox').value.toUpperCase();
@@ -337,6 +340,7 @@ function filtrarTabela() {
 
     rows.forEach((row, index) => {
         if (index === 0 && row.querySelector('th')) return;
+
         const celulas = row.querySelectorAll('td');
         if (celulas.length === 0) return;
 
@@ -359,6 +363,7 @@ function atualizaFiltrosTable() {
 
     rows.forEach((row, index) => {
         if (index === 0) return;
+
         const celulas = row.querySelectorAll('td');
         if (celulas[1]) {
             const setor = celulas[1].innerText.trim();
@@ -367,6 +372,7 @@ function atualizaFiltrosTable() {
     });
 
     areaBox.innerHTML = '<option value="todasAreas">Todas as Áreas</option>';
+
     setoresUnicos.forEach(setor => {
         const opt = document.createElement('option');
         opt.value = setor.toUpperCase();
@@ -379,9 +385,6 @@ document.getElementById('busca').addEventListener('input', filtrarTabela);
 document.getElementById('areaBox').addEventListener('change', filtrarTabela);
 document.getElementById('tipoBox').addEventListener('change', filtrarTabela);
 
-// ============================================================
-// CARREGAMENTO DO MENU DE SPRINTS
-// ============================================================
 function carregarMenuBanco() {
     const select = document.getElementById('selectSprint');
     if (!select) return;
@@ -421,6 +424,7 @@ function popularSelectComMapeamento(lista, servidorOnline) {
         opt.value = servidorOnline
             ? `${CONFIG.SERVER_BASE_URL}/${sprint.caminho_arquivo}`
             : `./${sprint.caminho_arquivo}`;
+
         opt.textContent = sprint.nome_exibicao;
         select.appendChild(opt);
     });

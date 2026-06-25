@@ -2,6 +2,7 @@ const axios = require('axios');
 const ExcelJS = require('exceljs');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs').promises;
 
 const mondayStatusMap = {
@@ -30,6 +31,62 @@ const urgencyMap = {
 };
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+const MOVIDESK_TICKETS_ENDPOINTS = [
+  'https://api.movidesk.com/public/v1/tickets',
+  'https://api.movidesk.com/public/v1/tickets/merged',
+  'https://api.movidesk.com/public/v1/tickets/past',
+];
+
+const MOVIDESK_TICKET_SELECT = 'id,subject,category,urgency,status,createdDate,resolvedIn,ownerTeam,serviceFirstLevel,slaSolutionDate,createdBy,clients';
+const MOVIDESK_TICKET_EXPAND = 'actions($select=description),createdBy,clients';
+
+function normalizarTextoComparacao(value) {
+  return String(value || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+}
+
+function valorVazioOuGenerico(value) {
+  const texto = normalizarTextoComparacao(value);
+  return [
+    '',
+    'N/A',
+    'NA',
+    'NAO',
+    'NAO INFORMADO',
+    'NAO INFORMADA',
+    'SETOR NAO INFORMADO',
+    'TIPO NAO INFORMADO',
+    'CATEGORIA NAO INFORMADA',
+    'DESCRICAO NAO INFORMADA',
+    'SOLICITANTE NAO DEFINIDO',
+    'EQUIPE NAO DEFINIDA',
+  ].includes(texto);
+}
+
+function ticketPrecisaComplemento(ticket) {
+  if (!ticket || ticket.ignorado) return true;
+  return ['area', 'tipo', 'categoria', 'descricao', 'solicitante', 'equipe', 'abertura', 'encerramento', 'status']
+    .some(key => valorVazioOuGenerico(ticket[key]));
+}
+
+function mesclarCampoPreferindoValor(baseValue, incomingValue) {
+  if (valorVazioOuGenerico(baseValue) && !valorVazioOuGenerico(incomingValue)) {
+    return incomingValue;
+  }
+  return baseValue;
+}
+
+function mesclarDadosTicket(base = {}, incoming = {}) {
+  if (!incoming || incoming.ignorado) return base || {};
+  const merged = { ...(base && !base.ignorado ? base : {}) };
+  for (const key of ['titulo', 'area', 'tipo', 'categoria', 'descricao', 'prioridade', 'solicitante', 'equipe', 'abertura', 'encerramento', 'status']) {
+    merged[key] = mesclarCampoPreferindoValor(merged[key], incoming[key]);
+  }
+  return merged;
+}
 
 // SLA baseado no ciclo da sprint
 const SLA_DIAS = 15;
@@ -63,10 +120,8 @@ function calcularSLA(dataEncerramentoObj, statusFinal, dataFimSprint) {
     return { dentroSLA: 'Aberto', atraso: 0 };
   }
 
-  // Ticket ainda aberto (A fazer, Fazendo, Impedido)
   if (!encerrado) {
     const hoje = new Date();
-    // Se a data atual já passou do dia de fechamento daquela Sprint cai como nao
     if (hoje > dataFimSprint) {
       const diasAtraso = Math.ceil((hoje - dataFimSprint) / (1000 * 24 * 60 * 60));
       return { dentroSLA: 'Não', atraso: diasAtraso };
@@ -74,26 +129,53 @@ function calcularSLA(dataEncerramentoObj, statusFinal, dataFimSprint) {
     return { dentroSLA: 'Aberto', atraso: 0 };
   }
 
-  //Ticket encerrado mas sem data válida de fechamento
   if (!dataEncerramentoObj || isNaN(dataEncerramentoObj.getTime())) {
     return { dentroSLA: 'Não', atraso: 0 };
   }
 
-  //Entregou até o último dia planejado daquela Sprint
   if (dataEncerramentoObj <= dataFimSprint) {
     return { dentroSLA: 'Sim', atraso: 0 };
   } else {
-    // Se entregou depois que o ciclo fechou, calcula o atraso em relação ao fim da sprint
     const atraso = Math.ceil((dataEncerramentoObj - dataFimSprint) / (1000 * 24 * 60 * 60));
     return { dentroSLA: 'Não', atraso: atraso };
   }
 }
 
+function limparTextoEncodingBug(texto) {
+  if (!texto) return 'N/A';
+  return texto
+    .replace(/Ã§/g, 'ç')
+    .replace(/Ã£/g, 'ã')
+    .replace(/Ã³/g, 'ó')
+    .replace(/Ã¡/g, 'á')
+    .replace(/Ãª/g, 'ê')
+    .replace(/Ã/g, 'a') // fallback 
+    .replace(/Â/g, ''); // remove regex extra
+}
+
+
+// Função para calcular a assinatura digital de uma sprint para detectar mudanças
+function calcularFingerprintSprint(itensDaSprint, mapaMovidesk, mondayTextColId, mondayStatusColId, mondayPriorityColId) {
+  const dataToHash = itensDaSprint.map(item => {
+    const idRaw = String(getColVal(item, mondayTextColId)).trim().replace(/\D/g, '');
+    const mov = idRaw ? mapaMovidesk[idRaw] : {};
+    return {
+      id: item.id,
+      name: item.name,
+      updated_at: item.updated_at || '', // Data de modificação do Monday
+      status: getColVal(item, mondayStatusColId),
+      priority: getColVal(item, mondayPriorityColId),
+      mov_status: mov?.status || '',
+      mov_encerramento: mov?.encerramento || ''
+    };
+  });
+  return crypto.createHash('sha256').update(JSON.stringify(dataToHash)).digest('hex');
+}
 
 async function buscarValoresCamposPersonalizadosPessoas(token) {
   const mapaValoresCamposPessoas = {};
   let skip = 0;
-  const take = 100;
+  const take = 300;
   const maxRetries = 3;
   const retryDelayMs = 2000;
 
@@ -162,7 +244,7 @@ async function buscarValoresCamposPersonalizadosPessoas(token) {
 async function buscarEstruturaCamposPersonalizadosClientes(token) {
   const mapaCamposGlobais = {};
   let skip = 0;
-  const take = 100;
+  const take = 300;
   const maxRetries = 3;
   const retryDelayMs = 2000;
 
@@ -243,10 +325,11 @@ async function buscarEstruturaCamposPersonalizadosClientes(token) {
   }
 }
 
+// paginação
 async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, movideskClientSectorCustomFieldId) {
   const mapa = {};
   let skip = 0;
-  const take = 100;
+  const take = 300;
   let total = 0;
   const maxRetries = 3;
   const retryDelayMs = 2000;
@@ -265,10 +348,7 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
           params: {
             token,
             '$select': 'id,subject,category,urgency,status,createdDate,resolvedIn,ownerTeam,serviceFirstLevel,slaSolutionDate,createdBy,clients',
-            // 🔥 CORREÇÃO 1: Adicionado ',clients' no expand para garantir que a API retorne os dados se o criador vier nulo
             '$expand': 'actions($select=description),createdBy,clients',
-            // Removido o filtro de data para buscar todos os tickets, independentemente da data de criação
-            // '$filter': 'createdDate gt 2025-01-01T00:00:00Z',
             '$top': take,
             '$skip': skip,
           },
@@ -292,15 +372,19 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
     if (lista.length === 0) break;
 
     for (const t of lista) {
-      // 🔥 Força o ID do ticket do Movidesk a virar String de forma limpa e sem espaços
       if (!t.id) continue;
       const idTicket = String(t.id).trim();
-      
       const statusTicket = t.status || 'N/A';
       const equipeBruta = t.ownerTeam || 'N/A';
 
-      const equipe = String(equipeBruta).trim();
-      if (equipe === 'Suporte e Infraestrutura' || equipe === 'Administradores') continue;
+      const equipe = t.ownerTeam && t.ownerTeam.trim() !== ''
+        ? String(t.ownerTeam).trim()
+        : (t.serviceFirstLevel || 'Equipe não definida');
+
+      if (equipe === 'Suporte e Infraestrutura' || equipe === 'Administradores') {
+        mapa[idTicket] = { ignorado: true, equipe };
+        continue;
+      }
 
       const prioridadeMovidesk = urgencyMap[t.urgency] || 'N/A';
       const categoria = t.category || 'N/A';
@@ -310,7 +394,7 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
       const closedDate = t.resolvedIn ? new Date(t.resolvedIn) : null;
 
       const acoes = t.actions || [];
-      const descRaw = acoes[0]?.description || ''; // Acessa o primeiro item do array de ações
+      const descRaw = acoes[0]?.description || '';
       const descricao = String(descRaw)
         .replace(/<[^>]*>?/gm, '')
         .replace(/\[cid:[^\]]*\]/g, '')
@@ -319,42 +403,47 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
         .trim()
         .substring(0, 300) || 'N/A';
 
-      // =========================================================================
-      // 🔥 CORREÇÃO 2: LÓGICA DE PRIORIDADE DE PESSOA (createdBy -> clients)
-      //    Trata usuários inativos e múltiplos clientes
-      // =========================================================================
-      let solicitante = 'Solicitante não informado';
-      let pessoaIdSetor = null;
+      let solicitante = 'Solicitante não definido';
 
+      if (t.createdBy?.businessName) {
+        solicitante = t.createdBy.businessName;
+      }
+      else if (t.createdBy?.personName || t.createdBy?.name) {
+        solicitante = t.createdBy.personName || t.createdBy.name;
+      }
+      else if (t.clients && t.clients.length > 0) {
+        solicitante = t.clients
+          .map(c => c.businessName || c.personName || c.name)
+          .filter(Boolean)
+          .join(', ');
+      }
+      else if (t.createdBy?.id) {
+        solicitante = `Usuário Desativado (ID: ${t.createdBy.id})`;
+      }
+
+      let pessoaIdSetor = null;
       const criadorObjeto = t.createdBy || {};
       const listaClientes = Array.isArray(t.clients) ? t.clients : [];
 
-      // Cenário A: O criador existe e está ativo (possuindo nome válido)
       if (criadorObjeto.personName || criadorObjeto.name || criadorObjeto.businessName) {
         solicitante = criadorObjeto.personName || criadorObjeto.name || criadorObjeto.businessName;
         pessoaIdSetor = criadorObjeto.id ? String(criadorObjeto.id) : null;
-      } 
-      // Cenário B: Criador nulo/inativo, mas temos uma lista de clientes (ex: as 5 pessoas)
+      }
       else if (listaClientes.length > 0) {
-        // Se houver mais de um cliente, junta os nomes separados por vírgula
         const nomesClientes = listaClientes
           .map(c => c.personName || c.name || c.businessName)
-          .filter(nome => nome) // Remove nulos
+          .filter(nome => nome)
           .join(', ');
 
         solicitante = nomesClientes || 'Múltiplos Clientes';
-        
-        // Pega o ID do primeiro cliente do array para mapear o setor corporativo
         pessoaIdSetor = listaClientes[0]?.id ? String(listaClientes[0].id) : null;
       }
 
-      // Caso especial: Usuário inativo/desabilitado que perdeu o vínculo de nome, mas o ID ainda existe
       if (solicitante === 'Solicitante não informado' && criadorObjeto.id) {
-          solicitante = `Usuário Desativado (ID: ${criadorObjeto.id})`;
-          pessoaIdSetor = String(criadorObjeto.id);
+        solicitante = `Usuário Desativado (ID: ${criadorObjeto.id})`;
+        pessoaIdSetor = String(criadorObjeto.id);
       }
 
-      // 2. Busca do Setor no seu mapa de pessoas de forma segura
       let setorCliente = 'Setor não informado';
       if (pessoaIdSetor && personCustomFieldValuesMap && movideskClientSectorCustomFieldId) {
         const camposPessoa = personCustomFieldValuesMap[pessoaIdSetor];
@@ -362,7 +451,6 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
           setorCliente = String(camposPessoa[String(movideskClientSectorCustomFieldId)]).trim();
         }
       }
-      // =========================================================================
 
       mapa[idTicket] = {
         area: setorCliente,
@@ -383,7 +471,6 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
     console.log(`[Movidesk] ${total} tickets processados (skip=${skip})...`);
     skip += take;
 
-    // Condição para encerrar a paginação real
     if (lista.length < take) break;
     if (total > 5000) break;
   }
@@ -392,6 +479,337 @@ async function buscarTodosTicketsMovidesk(token, personCustomFieldValuesMap, mov
   return mapa;
 }
 
+// Função auxiliar para realizar a chamada HTTP de um lote específico
+function normalizarTicketMovidesk(t, personCustomFieldValuesMap, movideskClientSectorCustomFieldId) {
+  if (!t || !t.id) return null;
+
+  const equipe = t.ownerTeam && t.ownerTeam.trim() !== ''
+    ? String(t.ownerTeam).trim()
+    : (t.serviceFirstLevel || 'Equipe não definida');
+
+  if (equipe === 'Suporte e Infraestrutura' || equipe === 'Administradores') {
+    return { id: String(t.id).trim(), dados: { ignorado: true, equipe } };
+  }
+
+  const acoes = t.actions || [];
+  const descRaw = acoes[0]?.description || '';
+  const descricao = String(descRaw)
+    .replace(/<[^>]*>?/gm, '')
+    .replace(/\[cid:[^\]]*\]/g, '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 300) || 'N/A';
+
+  let solicitante = 'Solicitante não definido';
+  let pessoaIdSetor = null;
+  const criadorObjeto = t.createdBy || {};
+  const listaClientes = Array.isArray(t.clients) ? t.clients : [];
+
+  if (criadorObjeto.businessName || criadorObjeto.personName || criadorObjeto.name) {
+    solicitante = criadorObjeto.businessName || criadorObjeto.personName || criadorObjeto.name;
+    pessoaIdSetor = criadorObjeto.id ? String(criadorObjeto.id) : null;
+  } else if (listaClientes.length > 0) {
+    solicitante = listaClientes
+      .map(c => c.businessName || c.personName || c.name)
+      .filter(Boolean)
+      .join(', ') || 'MÃºltiplos Clientes';
+    pessoaIdSetor = listaClientes[0]?.id ? String(listaClientes[0].id) : null;
+  } else if (criadorObjeto.id) {
+    solicitante = `UsuÃ¡rio Desativado (ID: ${criadorObjeto.id})`;
+    pessoaIdSetor = String(criadorObjeto.id);
+  }
+
+  let setorCliente = 'Setor não informado';
+  if (pessoaIdSetor && personCustomFieldValuesMap && movideskClientSectorCustomFieldId) {
+    const camposPessoa = personCustomFieldValuesMap[pessoaIdSetor];
+    const valorSetor = camposPessoa?.[String(movideskClientSectorCustomFieldId)];
+    if (!valorVazioOuGenerico(valorSetor)) {
+      setorCliente = String(valorSetor).trim();
+    }
+  }
+
+  const createdDate = t.createdDate ? new Date(t.createdDate) : null;
+  const closedDate = t.resolvedIn ? new Date(t.resolvedIn) : null;
+
+  return {
+    id: String(t.id).trim(),
+    dados: {
+      area: setorCliente,
+      titulo: t.subject || 'Sem TÃ­tulo',
+      tipo: t.serviceFirstLevel ? String(t.serviceFirstLevel).trim() : 'N/A',
+      categoria: t.category || 'N/A',
+      descricao,
+      prioridade: urgencyMap[t.urgency] || 'N/A',
+      solicitante: String(solicitante).trim(),
+      equipe,
+      abertura: createdDate && !isNaN(createdDate.getTime()) ? createdDate.toISOString() : null,
+      encerramento: closedDate && !isNaN(closedDate.getTime()) ? closedDate.toISOString() : null,
+      status: t.status || 'N/A'
+    }
+  };
+}
+
+async function buscarTodosTicketsMovideskConcorrente(token, take = 300, maxParallel = 4) {
+  let skip = 0;
+  let todosTickets = [];
+
+  while (true) {
+    const lote = [];
+    for (let i = 0; i < maxParallel; i++) {
+      lote.push(
+        axios.get('https://api.movidesk.com/public/v1/tickets', {
+          params: {
+            token,
+            '$select': MOVIDESK_TICKET_SELECT,
+            '$expand': MOVIDESK_TICKET_EXPAND,
+            '$top': take,
+            '$skip': skip + i * take,
+          },
+          httpsAgent,
+          timeout: 90000,
+        }).then(resp => {
+          const dados = resp.data.value || resp.data || [];
+          console.log(`[Movidesk] ${dados.length} tickets processados (skip=${skip + i * take})...`);
+          return dados;
+        }).catch(err => {
+          console.error(`[Movidesk] Erro skip=${skip + i * take}: ${err.message}`);
+          return [];
+        })
+      );
+    }
+
+    // executa todas em paralelo
+    const resultados = await Promise.all(lote);
+    const ticketsLote = resultados.flat();
+
+    // adiciona ao acumulado
+    todosTickets.push(...ticketsLote);
+
+    // se o último lote veio vazio encerra
+    if (ticketsLote.length < take * maxParallel) {
+      break;
+    }
+
+    // avança o skip para o próximo bloco
+    skip += take * maxParallel;
+  }
+
+  console.log(`[Movidesk] Total final: ${todosTickets.length} tickets carregados.`);
+  return todosTickets;
+}
+
+async function realizarChamadaLote(token, batch, endpoint = MOVIDESK_TICKETS_ENDPOINTS[0]) {
+  const filterString = batch.map(id => `id eq ${id}`).join(' or ');
+  const resp = await axios.get(endpoint, {
+    params: {
+      token,
+      '$select': MOVIDESK_TICKET_SELECT,
+      '$expand': MOVIDESK_TICKET_EXPAND,
+      '$filter': filterString
+    },
+    httpsAgent,
+    timeout: 90000,
+  });
+  return resp.data && resp.data.value ? resp.data.value : (Array.isArray(resp.data) ? resp.data : []);
+}
+
+
+async function buscarTicketsEspecificosMovideskConcorrente(token, ids, personCustomFieldValuesMap, movideskClientSectorCustomFieldId) {
+  const mapa = {};
+  const batchSize = 15;
+  const concurrency = 8;
+  const maxRetries = 3;
+  const retryDelayMs = 1500;
+
+  const batches = [];
+  for (let i = 0; i < ids.length; i += batchSize) {
+    batches.push(ids.slice(i, i + batchSize));
+  }
+
+  console.log(`[Movidesk] Buscando ${ids.length} tickets antigos/faltantes em ${batches.length} lotes concorrentes...`);
+
+  let lotesProcessados = 0;
+
+  async function processarLote(lote) {
+    if (lote.length === 0) return;
+    let success = false;
+    let retries = 0;
+    let tickets = [];
+
+    while (retries < maxRetries && !success) {
+      try {
+        tickets = await realizarChamadaLote(token, lote);
+        success = true;
+      } catch (err) {
+        retries++;
+        if (retries >= maxRetries) {
+          for (const id of lote) {
+            mapa[id] = { ignorado: true };
+          }
+        } else {
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        }
+      }
+    }
+
+    if (success && tickets && tickets.length > 0) {
+      for (const t of tickets) {
+        if (!t.id) continue;
+        const idTicket = String(t.id).trim();
+        const statusTicket = t.status || 'N/A';
+        const equipe = t.ownerTeam && t.ownerTeam.trim() !== ''
+          ? String(t.ownerTeam).trim()
+          : (t.serviceFirstLevel || 'Equipe não definida');
+
+        if (equipe === 'Suporte e Infraestrutura' || equipe === 'Administradores') {
+          mapa[idTicket] = { ignorado: true, equipe };
+          continue;
+        }
+
+        const prioridadeMovidesk = urgencyMap[t.urgency] || 'N/A';
+        const categoria = t.category || 'N/A';
+        const tipo = t.serviceFirstLevel ? String(t.serviceFirstLevel).trim() : 'N/A';
+        const createdDate = t.createdDate ? new Date(t.createdDate) : null;
+        const closedDate = t.resolvedIn ? new Date(t.resolvedIn) : null;
+
+        const acoes = t.actions || [];
+        const descRaw = acoes[0]?.description || '';
+        const descricao = String(descRaw)
+          .replace(/<[^>]*>?/gm, '')
+          .replace(/\[cid:[^\]]*\]/g, '')
+          .replace(/[\r\n\t]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .substring(0, 300) || 'N/A';
+
+        let solicitante = 'Solicitante não definido';
+        let personIdSetor = null;
+        const criadorObjeto = t.createdBy || {};
+        const listaClientes = Array.isArray(t.clients) ? t.clients : [];
+
+        if (criadorObjeto.businessName || criadorObjeto.personName || criadorObjeto.name) {
+          solicitante = criadorObjeto.businessName || criadorObjeto.personName || criadorObjeto.name;
+          personIdSetor = criadorObjeto.id ? String(criadorObjeto.id) : null;
+        } else if (listaClientes.length > 0) {
+          solicitante = listaClientes.map(c => c.personName || c.name || c.businessName).filter(Boolean).join(', ') || 'Múltiplos Clientes';
+          personIdSetor = listaClientes[0]?.id ? String(listaClientes[0].id) : null;
+        }
+
+        if ((solicitante === 'Solicitante não definido' || solicitante === 'Solicitante não informado') && criadorObjeto.id) {
+          solicitante = `Usuário Desativado (ID: ${criadorObjeto.id})`;
+          personIdSetor = String(criadorObjeto.id);
+        }
+
+        let setorCliente = 'Setor não informado';
+        if (personIdSetor && personCustomFieldValuesMap && movideskClientSectorCustomFieldId) {
+          const camposPessoa = personCustomFieldValuesMap[personIdSetor];
+          if (camposPessoa && camposPessoa[String(movideskClientSectorCustomFieldId)] !== undefined && camposPessoa[String(movideskClientSectorCustomFieldId)] !== null) {
+            setorCliente = String(camposPessoa[String(movideskClientSectorCustomFieldId)]).trim();
+          }
+        }
+
+        mapa[idTicket] = {
+          area: setorCliente,
+          tipo,
+          categoria,
+          descricao,
+          prioridade: prioridadeMovidesk,
+          solicitante: String(solicitante).trim(),
+          equipe,
+          abertura: createdDate ? createdDate.toISOString() : null,
+          encerramento: closedDate ? closedDate.toISOString() : null,
+          status: statusTicket
+        };
+      }
+    }
+    lotesProcessados++;
+    if (lotesProcessados % 20 === 0 || lotesProcessados === batches.length) {
+      console.log(`[Movidesk] ${lotesProcessados}/${batches.length} lotes antigos processados (${Object.keys(mapa).length} tickets mapeados)...`);
+    }
+  }
+
+  const queue = [...batches];
+  async function worker() {
+    while (queue.length > 0) {
+      const lote = queue.shift();
+      await processarLote(lote);
+    }
+  }
+
+  const workers = Array.from({ length: concurrency }, () => worker());
+  await Promise.all(workers);
+
+  console.log(`[Movidesk] Busca concorrente concluída. Mapeados ${Object.keys(mapa).length} tickets antigos.`);
+  return mapa;
+}
+
+async function buscarTicketsEspecificosMovideskFallback(token, ids, personCustomFieldValuesMap, movideskClientSectorCustomFieldId) {
+  const mapa = {};
+  const batchSize = 15;
+  const concurrency = 8;
+  const maxRetries = 3;
+  const retryDelayMs = 1500;
+  const batches = [];
+
+  for (let i = 0; i < ids.length; i += batchSize) {
+    batches.push(ids.slice(i, i + batchSize));
+  }
+
+  console.log(`[Movidesk] Complementando ${ids.length} tickets especificos em ${batches.length} lotes pelos endpoints normal, merged e past...`);
+
+  let lotesProcessados = 0;
+
+  async function processarLote(lote) {
+    for (const endpoint of MOVIDESK_TICKETS_ENDPOINTS) {
+      let tickets = [];
+      let success = false;
+      let retries = 0;
+
+      while (retries < maxRetries && !success) {
+        try {
+          tickets = await realizarChamadaLote(token, lote, endpoint);
+          success = true;
+        } catch (err) {
+          retries++;
+          if (retries < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+          }
+        }
+      }
+
+      if (!success || tickets.length === 0) continue;
+
+      for (const ticket of tickets) {
+        const normalizado = normalizarTicketMovidesk(ticket, personCustomFieldValuesMap, movideskClientSectorCustomFieldId);
+        if (!normalizado) continue;
+        mapa[normalizado.id] = mesclarDadosTicket(mapa[normalizado.id], normalizado.dados);
+      }
+    }
+
+    for (const id of lote) {
+      if (!mapa[id]) mapa[id] = { ignorado: true };
+    }
+
+    lotesProcessados++;
+    if (lotesProcessados % 20 === 0 || lotesProcessados === batches.length) {
+      console.log(`[Movidesk] ${lotesProcessados}/${batches.length} lotes complementados (${Object.keys(mapa).length} tickets mapeados)...`);
+    }
+  }
+
+  const queue = [...batches];
+  async function worker() {
+    while (queue.length > 0) {
+      const lote = queue.shift();
+      await processarLote(lote);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  console.log(`[Movidesk] Complemento por fallback concluido. Mapeados ${Object.keys(mapa).length} tickets.`);
+  return mapa;
+}
 
 async function buscarTodosItensMonday(boardId, token) {
   let allItems = [];
@@ -401,7 +819,6 @@ async function buscarTodosItensMonday(boardId, token) {
   console.log(`[Monday] Buscando itens do board ${boardId}...`);
 
   while (hasNextPage) {
-    // created_at adicionado para usar como data de entrada na sprint (base do SLA)
     const query = `
       query {
         boards(ids: ${boardId}) {
@@ -411,6 +828,7 @@ async function buscarTodosItensMonday(boardId, token) {
               id
               name
               created_at
+              updated_at
               group { title }
               column_values {
                 id
@@ -487,7 +905,7 @@ async function gerarExcelParaSprint(
   dataInicioSprint.setHours(0, 0, 0, 0);
 
   const dataFimSprint = new Date(dataInicioSprint.getTime());
-  dataFimSprint.setDate(dataInicioSprint.getDate() + 13);
+  dataFimSprint.setDate(dataInicioSprint.getDate() + (SLA_DIAS - 1));
   dataFimSprint.setHours(23, 59, 59, 999);
 
   const strInicio = dataInicioSprint.toLocaleDateString('pt-BR');
@@ -504,6 +922,7 @@ async function gerarExcelParaSprint(
   const contagemStatus = {};
   const contagemSemanaFinalizados = {};
   const ticketsForaSLA = [];
+  const idsDaSprint = new Set();
 
   ticketsSheet.columns = [
     { header: 'Ticket', key: 'ticket', width: 10 },
@@ -521,6 +940,7 @@ async function gerarExcelParaSprint(
     { header: 'Dentro da SLA', key: 'sla', width: 14 },
     { header: 'Semana', key: 'semana', width: 12 },
     { header: 'Mês', key: 'mes', width: 14 },
+    { header: 'Origem', key: 'origem', width: 18 },
   ];
 
   ticketsSheet.getRow(1).eachCell(cell => {
@@ -532,66 +952,52 @@ async function gerarExcelParaSprint(
 
   for (const item of itensDaSprint) {
     try {
-      // 🔥 CORREÇÃO PRINCIPAL: Garante que o ID do Monday seja uma String limpa
-      const mondayMovideskIdRaw = typeof getColVal === 'function' ? String(getColVal(item, mondayTextColId)).trim() : null;
-      
-      // 🔥 NOVA LÓGICA: 'mov' agora só terá dados se o ID do Monday *existir como chave* no mapa do Movidesk
-      // Isso garante que itens Monday-only (ou IDs inválidos) resultem em 'mov' vazio.
+      let mondayMovideskIdRaw = String(getColVal(item, mondayTextColId)).trim();
+      mondayMovideskIdRaw = mondayMovideskIdRaw.replace(/\D/g, '');
+      if (mondayMovideskIdRaw) idsDaSprint.add(mondayMovideskIdRaw);
+
       const mov = (mondayMovideskIdRaw && mapaMovidesk[mondayMovideskIdRaw]) ? mapaMovidesk[mondayMovideskIdRaw] : {};
 
-      // Determina se este item do Monday *realmente* tem dados correspondentes no Movidesk
-      const temDadosMovidesk = Object.keys(mov).length > 0;
+      const movFinal = (mov && !mov.ignorado) ? mov : {};
+      const temDadosMovidesk = Object.keys(movFinal).length > 0;
 
       const prioMon = typeof getColVal === 'function' ? (mondayPriorityMap[getColVal(item, mondayPriorityColId)] || 'Não definida') : 'Não definida';
       const typeMon = typeof getColVal === 'function' ? getColVal(item, mondayTypeColId) : null;
       const descMon = typeof getColVal === 'function' ? getColVal(item, mondayDescriptionColId) : null;
 
-      // =========================================================================
-      // AJUSTE: Solicitante, Área e Equipe vêm SOMENTE do Movidesk.
-      // Se não houver dados do Movidesk, usam o fallback "Não informado".
-      // =========================================================================
-      // O ticketId será o ID do Movidesk (se temDadosMovidesk for true) ou o ID do Monday
-      const ticketId = temDadosMovidesk ? mondayMovideskIdRaw : item.id;
-      
-      // Área: Estritamente do Movidesk, ou "Setor não informado"
-      const area = mov.area || 'Setor não informado';
-      
-      // Tipo: Pode vir do Monday se não houver Movidesk, ou "Tipo não informado"
-      const tipo = typeMon || mov.tipo || 'Tipo não informado';
-      
-      // Categoria: Estritamente do Movidesk, ou "Categoria não informada"
-      const categoria = mov.categoria || 'Categoria não informada';
-      
-      // Título: Pode vir do Monday se não houver Movidesk, ou "Sem Título"
+      const ticketId = mondayMovideskIdRaw || 'ID não informado';
+
+      const area = movFinal.area || 'Setor não informado';
+      const tipo = typeMon || movFinal.tipo || 'Tipo não informado';
+      const categoria = movFinal.categoria || 'Categoria não informada';
       const titulo = item.name || 'Sem Título';
-      
-      // Descrição: Pode vir do Monday se não houver Movidesk, ou "Descrição não informada"
-      const descricao = descMon || mov.descricao || item.name || 'Descrição não informada';
-      
-      // Prioridade: Vem do Monday, ou "Não definida"
-      const prioridade = prioMon; 
+      const descricao = movFinal?.descricao || getColVal(item, mondayDescriptionColId) || 'Descrição não informada';
+      const prioridade = prioMon;
+      const solicitante = movFinal?.solicitante && movFinal.solicitante !== 'Solicitante não definido'
+        ? movFinal.solicitante
+        : (getColVal(item, 'colunaSolicitanteMonday') || 'Solicitante não definido');
+      const equipe = movFinal?.equipe && movFinal.equipe !== 'Equipe não definida'
+        ? movFinal.equipe
+        : (getColVal(item, 'colunaEquipeMonday') || 'Equipe não definida');
 
-      // Solicitante: Estritamente do Movidesk, ou "Solicitante não informado"
-      const solicitante = mov.solicitante || 'Solicitante não informado';
-      
-      // Equipe: Estritamente do Movidesk, ou "Equipe não informada"
-      const equipe = mov.equipe || 'Equipe não informada';
-      // =========================================================================
-
-      let dataEntradaSprint = item.created_at ? new Date(item.created_at) : null;
-      if (!dataEntradaSprint && typeof getColVal === 'function') {
-        const dataMondayCriacao = getColVal(item, mondayCreationDateColId);
-        if (dataMondayCriacao && !isNaN(new Date(dataMondayCriacao).getTime())) {
-          dataEntradaSprint = new Date(dataMondayCriacao);
-        }
+      let dataEntradaSprint = movFinal.abertura ? new Date(movFinal.abertura) : null;
+      if (!dataEntradaSprint && t.createdDate) {
+        dataEntradaSprint = new Date(t.createdDate);
       }
 
-      let dataEncerramentoObj = mov.encerramento ? new Date(mov.encerramento) : null;
-      if (!dataEncerramentoObj && typeof getColVal === 'function') {
-        const dataMondayResolucao = getColVal(item, mondayResolutionDateColId);
-        if (dataMondayResolucao && !isNaN(new Date(dataMondayResolucao).getTime())) {
-          dataEncerramentoObj = new Date(dataMondayResolucao);
-        }
+      let dataEncerramentoObj = null;
+      if (movFinal.encerramento) {
+        dataEncerramentoObj = new Date(movFinal.encerramento);
+      } else if (t.resolvedIn) {
+        dataEncerramentoObj = new Date(t.resolvedIn);
+      } else if (t.closedIn) {
+        dataEncerramentoObj = new Date(t.closedIn);
+      } else if (t.reopenedIn) {
+        dataEncerramentoObj = new Date(t.reopenedIn);
+      }
+
+      if (dataEncerramentoObj && dataEntradaSprint && dataEncerramentoObj < dataEntradaSprint) {
+        dataEncerramentoObj = null;
       }
 
       const aberturaFormatada = dataEntradaSprint ? dataEntradaSprint.toLocaleDateString('pt-BR') : 'N/A';
@@ -628,14 +1034,16 @@ async function gerarExcelParaSprint(
 
       const { dentroSLA, atraso } = calcularSLA(dataEncerramentoObj, statusFinal, dataFimSprint);
 
-      if (dentroSLA === 'Sim') {
+      const encerradoNoPeriodo = STATUS_ENCERRADO.includes(statusFinal)
+        && dataEncerramentoObj
+        && dataEncerramentoObj >= dataInicioSprint
+        && dataEncerramentoObj <= dataFimSprint;
+
+      if (encerradoNoPeriodo) {
         dentroSLACount++;
-      } else if (dentroSLA === 'Não') {
-        foraSLACount++;
-        ticketsForaSLA.push({ ticket: ticketId, area, titulo, prioridade, atraso });
       }
 
-      let tempoResolucao = mov.tempoResolucao ?? 'N/A';
+      let tempoResolucao = movFinal.tempoResolucao ?? 'N/A';
       if (['Feito', 'Implantação'].includes(statusFinal)) {
         if (typeof tempoResolucao === 'number') {
           totalTempoResolucao += tempoResolucao;
@@ -656,6 +1064,7 @@ async function gerarExcelParaSprint(
         sla: dentroSLA,
         semana: semanaLinha,
         mes: mesLinha,
+        origem: 'Planejado',
       });
       row.eachCell(cell => { cell.alignment = { vertical: 'middle', wrapText: true }; });
     } catch (errItem) {
@@ -663,13 +1072,58 @@ async function gerarExcelParaSprint(
     }
   }
 
+  for (const [idMovidesk, mov] of Object.entries(mapaMovidesk)) {
+    if (!idMovidesk || idsDaSprint.has(idMovidesk) || !mov || mov.ignorado) continue;
+
+    const equipeForaSprint = normalizarTextoComparacao(mov.equipe || '');
+    if (
+      !equipeForaSprint.includes('SISTEMAS') &&
+      !equipeForaSprint.includes('ADH')
+    ) {
+      continue;
+    }
+
+    const dataEncerramentoForaSprint = mov.encerramento ? new Date(mov.encerramento) : null;
+    if (!dataEncerramentoForaSprint || isNaN(dataEncerramentoForaSprint.getTime())) continue;
+    if (dataEncerramentoForaSprint < dataInicioSprint || dataEncerramentoForaSprint > dataFimSprint) continue;
+
+    foraSLACount++;
+    const area = mov.area || 'Setor nÃo informado';
+    const tipo = mov.tipo || 'Tipo nÃo informado';
+    const categoria = mov.categoria || 'Categoria nÃo informada';
+    const titulo = mov.titulo || `Chamado ${idMovidesk}`;
+    const descricao = mov.descricao || 'DescriÃ§Ã£o nÃo informada';
+    const prioridade = mov.prioridade || 'NÃo definida';
+    const solicitante = mov.solicitante || 'Solicitante nÃo definido';
+    const equipe = mov.equipe || 'Equipe nÃo definida';
+    const dataAberturaForaSprint = mov.abertura ? new Date(mov.abertura) : null;
+    const aberturaFormatada = dataAberturaForaSprint && !isNaN(dataAberturaForaSprint.getTime())
+      ? dataAberturaForaSprint.toLocaleDateString('pt-BR')
+      : 'N/A';
+    const encerramentoFormatado = dataEncerramentoForaSprint.toLocaleDateString('pt-BR');
+    const semanaLinha = calcularSemana(dataEncerramentoForaSprint);
+    const mesLinha = nomeMes(dataEncerramentoForaSprint);
+
+    ticketsForaSLA.push({ ticket: idMovidesk, area, titulo, prioridade, atraso: 0 });
+
+    const row = ticketsSheet.addRow({
+      ticket: idMovidesk, area, tipo, categoria, titulo,
+      descricao, prioridade, solicitante, equipe,
+      abertura: aberturaFormatada,
+      encerramento: encerramentoFormatado,
+      status: mov.status || 'Encerrado',
+      sla: 'Não',
+      semana: semanaLinha,
+      mes: mesLinha,
+      origem: 'Fora da Sprint',
+    });
+    row.eachCell(cell => { cell.alignment = { vertical: 'middle', wrapText: true }; });
+  }
+
   const totalEncerrados = dentroSLACount + foraSLACount;
   const percentualSLA = totalEncerrados > 0 ? (dentroSLACount / totalEncerrados) : 0;
   const tempoMedio = countResolvidos > 0 ? (totalTempoResolucao / countResolvidos).toFixed(2) : 0;
 
-  // ============================================================
-  // ABA: CAMPOS PERSONALIZADOS CLIENTES (Opcional)
-  // ============================================================
   if (listaEstruturaCamposClientes && listaEstruturaCamposClientes.length > 0) {
     const camposClientesSheet = workbook.addWorksheet('Campos Personalizados Clientes');
     camposClientesSheet.columns = [
@@ -694,7 +1148,7 @@ async function gerarExcelParaSprint(
   }
 
   // ============================================================
-  // MONTAGEM SEGURO DA ABA 1: DASHBOARD
+  // DASHBOARD
   // ============================================================
   dashSheet.mergeCells('A1:C1');
   dashSheet.getCell('A1').value = 'Dashboard de Change Log - Governança de TI';
@@ -710,7 +1164,7 @@ async function gerarExcelParaSprint(
   dashSheet.getCell('A5').value = totalTicketsDaSprint;
   dashSheet.getCell('A5').font = fonteNegrito;
 
-  dashSheet.getCell('D4').value = '% dentro do SLA';
+  dashSheet.getCell('D4').value = '% planejado';
   dashSheet.getCell('D5').value = percentualSLA;
   dashSheet.getCell('D5').numFmt = '0.00%';
   dashSheet.getCell('D5').font = fonteNegrito;
@@ -739,7 +1193,7 @@ async function gerarExcelParaSprint(
   });
 
   // ============================================================
-  // MONTAGEM SEGURO DA ABA 2: RESUMO
+  // RESUMO
   // ============================================================
   resumoSheet.getCell('A1').value = 'Resumo Executivo';
   resumoSheet.getCell('A1').font = fonteNegrito;
@@ -772,11 +1226,16 @@ async function gerarExcelParaSprint(
     resumoSheet.getCell(`H${10 + i}`).value = contagemPrio[p] || 0;
   });
 
-  resumoSheet.getCell('J9').value = 'Cumprimento SLA (15 dias)';
+  resumoSheet.getCell('J9').value = 'Planejado x Fora da Sprint';
   resumoSheet.getCell('J9').font = fonteNegrito;
-  resumoSheet.getCell('J10').value = 'Sim'; resumoSheet.getCell('K10').value = dentroSLACount;
-  resumoSheet.getCell('J11').value = 'Não'; resumoSheet.getCell('K11').value = foraSLACount;
-  resumoSheet.getCell('J12').value = 'Abertos'; resumoSheet.getCell('K12').value = totalTicketsDaSprint - totalEncerrados;
+  resumoSheet.getCell('J10').value = 'Planejado';
+  resumoSheet.getCell('K10').value = totalTicketsDaSprint;
+
+  resumoSheet.getCell('J11').value = 'Fora da Sprint';
+  resumoSheet.getCell('K11').value = foraSLACount;
+
+  resumoSheet.getCell('J12').value = 'Abertos';
+  resumoSheet.getCell('K12').value = Math.max(totalTicketsDaSprint - dentroSLACount, 0);
 
   resumoSheet.getCell('M9').value = 'Status Final';
   resumoSheet.getCell('M9').font = fonteNegrito;
@@ -794,7 +1253,7 @@ async function gerarExcelParaSprint(
     resumoSheet.getCell(`Q${10 + i}`).value = qtd;
   });
 
-  resumoSheet.getCell('D19').value = 'Top tickets fora do SLA';
+  resumoSheet.getCell('D19').value = 'Demandas atendidas fora da sprint';
   resumoSheet.getCell('D19').font = fonteNegrito;
   ['D20', 'E20', 'F20', 'G20'].forEach((c, i) => {
     const cell = resumoSheet.getCell(c);
@@ -824,9 +1283,6 @@ async function gerarExcelParaSprint(
   resumoSheet.getColumn(6).width = 15;
   resumoSheet.getColumn(7).width = 35;
 
-  // ============================================================
-  // GRAVAÇÃO DO ARQUIVO FÍSICO COM TODAS AS ABAS GARANTIDAS
-  // ============================================================
   const nomeArquivo = `monday_sprint_${sprintNome.toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, '_').replace(/[^a-z0-9_\-]/g, '')}.xlsx`;
@@ -852,6 +1308,26 @@ async function sincronizarMondaySprints(
 
   const movideskToken = process.env.MOVIDESK_TOKEN;
 
+  // 1. TENTA CARREGAR OS CACHES LOCAIS DO DISCO (SE EXISTIREM)
+  let mapaMovidesk = {};
+  try {
+    const data = await fs.readFile(path.join(dirPath, 'movidesk_cache.json'), 'utf8');
+    mapaMovidesk = JSON.parse(data);
+    console.log(`[Cache] Carregados ${Object.keys(mapaMovidesk).length} tickets do cache local do Movidesk.`);
+  } catch {
+    console.log('[Cache] Nenhum cache local do Movidesk encontrado. Iniciando do zero.');
+  }
+
+  let cacheSprints = {};
+  try {
+    const data = await fs.readFile(path.join(dirPath, 'sprints_cache.json'), 'utf8');
+    cacheSprints = JSON.parse(data);
+    console.log(`[Cache] Carregados metadados de ${Object.keys(cacheSprints).length} sprints do cache local.`);
+  } catch {
+    console.log('[Cache] Nenhum cache local de sprints encontrado.');
+  }
+
+  // 2. Busca os dados de pessoas e campos personalizados primeiro
   const personCustomFieldValuesMap = movideskToken
     ? await buscarValoresCamposPersonalizadosPessoas(movideskToken)
     : {};
@@ -860,17 +1336,62 @@ async function sincronizarMondaySprints(
     ? await buscarEstruturaCamposPersonalizadosClientes(movideskToken)
     : [];
 
-  const mapaMovidesk = movideskToken
-    ? await buscarTodosTicketsMovidesk(movideskToken, personCustomFieldValuesMap, movideskClientSectorCustomFieldId)
-    : {};
 
+  if (movideskToken) {
+    const novosTickets = await buscarTodosTicketsMovidesk(movideskToken, personCustomFieldValuesMap, movideskClientSectorCustomFieldId);
+    Object.assign(mapaMovidesk, novosTickets);
+  }
+
+  // 4. Busca todos os itens do Monday
   let todosItensMonday;
   try {
     todosItensMonday = await buscarTodosItensMonday(boardId, token);
   } catch (err) {
-    throw new Error(`[Monday] Erro crítico na extração de dados do Monday: ${err.message}`);
+    console.error('[Monday] ERRO COMPLETO:', err);
+    console.error('[Monday] RESPONSE:', err.response?.data);
+    console.error('[Monday] STATUS:', err.response?.status);
+
+    throw new Error(
+      `[Monday] Erro crítico na extração de dados do Monday: ${err.response?.data?.errors
+        ? JSON.stringify(err.response.data.errors)
+        : err.message || JSON.stringify(err)
+      }`
+    );
   }
 
+  // 5. Extrai todos os IDs únicos de tickets do Movidesk que estão no Monday
+  const idsMovideskUnicos = new Set();
+  for (const item of todosItensMonday) {
+    let idRaw = String(getColVal(item, mondayTextColId)).trim().replace(/\D/g, '');
+    if (idRaw) idsMovideskUnicos.add(idRaw);
+  }
+  const arrayIds = Array.from(idsMovideskUnicos);
+  console.log(`[Monday] Identificados ${arrayIds.length} IDs únicos de tickets do Movidesk no board.`);
+
+  // 6. Identifica quais IDs do Monday NÃO foram encontrados no mapa (tickets antigos)
+  const idsFaltantes = [];
+  for (const id of arrayIds) {
+    if (ticketPrecisaComplemento(mapaMovidesk[id])) {
+      idsFaltantes.push(id);
+    }
+  }
+  console.log(`[Monday] Dos ${arrayIds.length} tickets do Monday, ${idsFaltantes.length} são antigos/faltantes.`);
+
+  // 7. Busca concorrente paralela (8 requisições simultâneas) apenas para os tickets faltantes do "past"
+  if (movideskToken && idsFaltantes.length > 0) {
+    const mapaFaltantes = await buscarTicketsEspecificosMovideskFallback(
+      movideskToken,
+      idsFaltantes,
+      personCustomFieldValuesMap,
+      movideskClientSectorCustomFieldId
+    );
+    // Mescla os tickets recuperados sem apagar campos bons ja existentes no cache
+    for (const [id, dados] of Object.entries(mapaFaltantes)) {
+      mapaMovidesk[id] = mesclarDadosTicket(mapaMovidesk[id], dados);
+    }
+  }
+
+  // 8. Agrupa os itens do Monday por Sprint
   const sprints = {};
   const gruposIgnorados = ['BACKLOG', 'PROXIMA SPRINT', 'PRÓXIMA SPRINT', 'SPRINT ATUAL'];
 
@@ -883,9 +1404,44 @@ async function sincronizarMondaySprints(
 
   console.log(`[Monday] ${Object.keys(sprints).length} sprints mapeadas.`);
 
+  // 9. Gera os arquivos Excel de forma incremental (Apenas se houver alterações!)
   const resultados = [];
+  let totalSprintsIgnoradas = 0;
+
   for (const [sprintNome, itensDaSprint] of Object.entries(sprints)) {
     try {
+      const nomeArquivo = `monday_sprint_${sprintNome.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '_').replace(/[^a-z0-9_\-]/g, '')}.xlsx`;
+      const caminhoCompletoExcel = path.join(dirPath, nomeArquivo);
+
+      // Verifica se o arquivo Excel já existe fisicamente no disco
+      let existeExcel = false;
+      try {
+        await fs.access(caminhoCompletoExcel);
+        existeExcel = true;
+      } catch { }
+
+      // Calcula a assinatura digital atual da sprint
+      const fingerprintAtual = calcularFingerprintSprint(
+        itensDaSprint,
+        mapaMovidesk,
+        mondayTextColId,
+        mondayStatusColId,
+        mondayPriorityColId
+      );
+
+      // SE O EXCEL EXISTE E A ASSINATURA É IGUAL: Pula a geração e aproveita o arquivo!
+      if (existeExcel && cacheSprints[sprintNome] && cacheSprints[sprintNome].fingerprint === fingerprintAtual) {
+        totalSprintsIgnoradas++;
+        resultados.push({
+          nome_exibicao: `MONDAY - ${sprintNome.toUpperCase()}`,
+          caminho_arquivo: `utils/${nomeArquivo}`
+        });
+        continue;
+      }
+
+      // Caso contrário, gera o Excel normalmente e atualiza o cache
       console.log(`[Monday] Gerando Excel para: "${sprintNome}" (${itensDaSprint.length} itens).`);
       const res = await gerarExcelParaSprint(
         sprintNome, itensDaSprint, mapaMovidesk, dirPath,
@@ -894,14 +1450,34 @@ async function sincronizarMondaySprints(
         mondayCreationDateColId, mondayResolutionDateColId,
         listaEstruturaCamposClientes
       );
-      if (res) resultados.push(res);
+
+      if (res) {
+        resultados.push(res);
+        cacheSprints[sprintNome] = {
+          fingerprint: fingerprintAtual,
+          arquivo: nomeArquivo
+        };
+      }
     } catch (err) {
       console.error(`[Monday] Falha na sprint "${sprintNome}":`, err.message);
     }
   }
 
+  if (totalSprintsIgnoradas > 0) {
+    console.log(`[Cache] ${totalSprintsIgnoradas} sprints sem alterações foram carregadas do cache local.`);
+  }
+
+  // 10. SALVA OS CACHES ATUALIZADOS NO DISCO PARA A PRÓXIMA EXECUÇÃO
   try {
     await fs.mkdir(dirPath, { recursive: true });
+    await fs.writeFile(path.join(dirPath, 'movidesk_cache.json'), JSON.stringify(mapaMovidesk, null, 2), 'utf8');
+    await fs.writeFile(path.join(dirPath, 'sprints_cache.json'), JSON.stringify(cacheSprints, null, 2), 'utf8');
+    console.log('[Cache] Arquivos de cache local atualizados com sucesso.');
+  } catch (errCache) {
+    console.error('[Cache] Erro ao salvar caches locais:', errCache.message);
+  }
+
+  try {
     const arquivosNaPasta = await fs.readdir(dirPath);
     const planilhas = arquivosNaPasta.filter(f => f.endsWith('.xlsx'));
 
@@ -932,7 +1508,7 @@ async function sincronizarMondaySprints(
         JSON.stringify(listaCompletaSprints, null, 2),
         'utf8'
       );
-      console.log('[Altona] Índice estático utils/sprints.json atualizado.');
+      console.log('[Altona] Índice estático utils/sprints.json updated.');
     } else {
       console.error(' Abortando atualização do sprints.json: Nenhuma sprint válida foi gerada.');
     }

@@ -6,6 +6,8 @@ const path = require('path');
 const chokidar = require('chokidar');
 const dotenv = require('dotenv');
 
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const envPath = path.join(__dirname, '..', '.env');
 const resultDotEnv = dotenv.config({ path: envPath });
 
@@ -16,10 +18,6 @@ if (resultDotEnv.error) {
 }
 
 const { sincronizarMondaySprints } = require('./monday');
-
-// CONFIGURAÇÃO GERAL
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 const dirPath = path.join(__dirname, '..', 'utils');
@@ -243,6 +241,6 @@ app.get('/api/campos-clientes', async (req, res) => {
 // INICIALIZAÇÃO DO SERVIDOR
 // ============================================================
 app.listen(PORT, () => {
-    console.log(`Servidor rodando em http://localhost:${PORT}`);
+    console.log(`Servidor rodando em http://10.0.9.14:${PORT}`);
     agendarProximaSincronizacao();
 });
